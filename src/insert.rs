@@ -1,8 +1,10 @@
 //! One INSERT taken apart, so the far-end [`crate::Session`] can record
-//! what a client wrote without being a SQL parser. The one statement
-//! `Transport::send` writes — `INSERT INTO <table> (<column>) VALUES
-//! (<literal>)` — with bracketed or bare identifiers and a string or `0x`
-//! literal; anything else is not an insert this crate serves.
+//! what a client wrote without being a SQL parser. The statement's shape is
+//! the capability's (`transport::sql`, ADR-0044); the T-SQL dialect is
+//! here — bracketed or bare identifiers and a string or `0x` literal.
+//! Anything else is not an insert this crate serves.
+
+use transport::sql;
 
 use crate::binary::from_hex_literal;
 
@@ -11,24 +13,8 @@ use crate::binary::from_hex_literal;
 /// with or without its `N`, quotes undoubled; a `0x` literal's bytes.
 /// Identifiers may be bracketed; anything else is `None`.
 #[must_use]
-pub fn parse_insert(sql: &str) -> Option<(String, String, Vec<u8>)> {
-    let rest = sql.trim().trim_end_matches(';');
-    let rest = strip_word(rest, "INSERT")?;
-    let rest = strip_word(rest, "INTO")?;
-    let (table, rest) = identifier(rest)?;
-    let rest = rest.trim_start().strip_prefix('(')?;
-    let (column, rest) = identifier(rest)?;
-    let rest = rest.trim_start().strip_prefix(')')?;
-    let rest = strip_word(rest, "VALUES")?;
-    let rest = rest.trim_start().strip_prefix('(')?;
-    let (value, rest) = literal(rest)?;
-    (rest.trim() == ")").then_some((table, column, value))
-}
-
-fn strip_word<'a>(rest: &'a str, word: &str) -> Option<&'a str> {
-    let rest = rest.trim_start();
-    let head = rest.get(..word.len())?;
-    head.eq_ignore_ascii_case(word).then(|| &rest[word.len()..])
+pub fn parse_insert(statement: &str) -> Option<(String, String, Vec<u8>)> {
+    sql::parse_insert(statement, identifier, literal)
 }
 
 /// One identifier, bare or bracketed with `]]` for a bracket, and what
