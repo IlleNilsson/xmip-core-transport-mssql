@@ -8,6 +8,8 @@
 
 use std::io::{Read, Write};
 
+use std::ops::{Deref, DerefMut};
+use transport::cursor::Cursor as Shared;
 use transport::error::{Result, classify, protocol_error};
 
 /// A SQL batch, from the client.
@@ -187,60 +189,29 @@ pub fn push_us_varchar(out: &mut Vec<u8>, text: &str) {
     out.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
 }
 
-/// Reads a payload's fields in order.
-pub struct Cursor<'a> {
-    bytes: &'a [u8],
-    at: usize,
+/// Reads a payload's fields in order: the transport's cursor, with TDS's
+/// fields named on it.
+pub struct Cursor<'a>(Shared<'a>);
+
+impl<'a> Deref for Cursor<'a> {
+    type Target = Shared<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Cursor<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl<'a> Cursor<'a> {
     /// A cursor at the start of `bytes`.
     #[must_use]
     pub const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, at: 0 }
-    }
-
-    /// True when nothing remains.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.at >= self.bytes.len()
-    }
-
-    /// What remains.
-    #[must_use]
-    pub fn remaining(&self) -> &'a [u8] {
-        &self.bytes[self.at.min(self.bytes.len())..]
-    }
-
-    /// The next `count` bytes.
-    ///
-    /// # Errors
-    /// Fewer than `count` bytes remain.
-    pub fn take(&mut self, count: usize) -> Result<&'a [u8]> {
-        let end = self
-            .at
-            .checked_add(count)
-            .filter(|end| *end <= self.bytes.len())
-            .ok_or_else(|| protocol_error("a field that runs past the message"))?;
-        let slice = &self.bytes[self.at..end];
-        self.at = end;
-        Ok(slice)
-    }
-
-    /// Past the next `count` bytes.
-    ///
-    /// # Errors
-    /// Fewer than `count` bytes remain.
-    pub fn skip(&mut self, count: usize) -> Result<()> {
-        self.take(count).map(|_| ())
-    }
-
-    /// The next byte.
-    ///
-    /// # Errors
-    /// Nothing remains.
-    pub fn byte(&mut self) -> Result<u8> {
-        Ok(self.take(1)?[0])
+        Self(Shared::new(bytes))
     }
 
     /// The next little-endian u16.
@@ -248,8 +219,7 @@ impl<'a> Cursor<'a> {
     /// # Errors
     /// Fewer than two bytes remain.
     pub fn u16(&mut self) -> Result<u16> {
-        let b = self.take(2)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
+        Ok(u16::from_le_bytes(self.array()?))
     }
 
     /// The next big-endian u16, which the pre-login's table uses alone.
@@ -257,8 +227,7 @@ impl<'a> Cursor<'a> {
     /// # Errors
     /// Fewer than two bytes remain.
     pub fn u16_be(&mut self) -> Result<u16> {
-        let b = self.take(2)?;
-        Ok(u16::from_be_bytes([b[0], b[1]]))
+        Ok(u16::from_be_bytes(self.array()?))
     }
 
     /// The next little-endian u32.
@@ -266,8 +235,7 @@ impl<'a> Cursor<'a> {
     /// # Errors
     /// Fewer than four bytes remain.
     pub fn u32(&mut self) -> Result<u32> {
-        let b = self.take(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        Ok(u32::from_le_bytes(self.array()?))
     }
 
     /// The next big-endian u32, which the login acknowledgement's version
@@ -276,8 +244,7 @@ impl<'a> Cursor<'a> {
     /// # Errors
     /// Fewer than four bytes remain.
     pub fn u32_be(&mut self) -> Result<u32> {
-        let b = self.take(4)?;
-        Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        Ok(u32::from_be_bytes(self.array()?))
     }
 
     /// The next little-endian i32.
@@ -285,8 +252,7 @@ impl<'a> Cursor<'a> {
     /// # Errors
     /// Fewer than four bytes remain.
     pub fn i32(&mut self) -> Result<i32> {
-        let b = self.take(4)?;
-        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        Ok(i32::from_le_bytes(self.array()?))
     }
 
     /// The next little-endian u64.
@@ -294,10 +260,7 @@ impl<'a> Cursor<'a> {
     /// # Errors
     /// Fewer than eight bytes remain.
     pub fn u64(&mut self) -> Result<u64> {
-        let b = self.take(8)?;
-        let mut eight = [0u8; 8];
-        eight.copy_from_slice(b);
-        Ok(u64::from_le_bytes(eight))
+        Ok(u64::from_le_bytes(self.array()?))
     }
 
     /// The next `chars` characters of UCS-2 as text.
