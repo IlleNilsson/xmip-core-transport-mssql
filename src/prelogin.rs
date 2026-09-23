@@ -4,7 +4,7 @@
 //! sides share. Five options are spoken here: VERSION, ENCRYPTION,
 //! INSTOPT, THREADID and MARS. The client says it does not support
 //! encryption and the server agrees or demands it, and a demand stops
-//! this crate, because TLS is the transport capability's per ADR-0033.
+//! this crate, because TLS is `xmip-core-tls`'s per ADR-0033.
 //! MARS is off: one batch at a time is what a Location runs. Anything
 //! else in the table is read past.
 
