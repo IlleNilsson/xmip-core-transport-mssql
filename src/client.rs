@@ -123,10 +123,10 @@ impl Client {
                 Token::Error(message) => failed = Some(sql_error(&message)),
                 Token::Done { status, rows }
                 | Token::DoneProc { status, rows }
-                | Token::DoneInProc { status, rows } => {
-                    if status & DONE_COUNT != 0 {
-                        result.rows_affected = rows;
-                    }
+                | Token::DoneInProc { status, rows }
+                    if status & DONE_COUNT != 0 =>
+                {
+                    result.rows_affected = rows;
                 }
                 _ => {}
             }
