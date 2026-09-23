@@ -59,7 +59,7 @@ impl Client {
         let answer = read_prelogin(&client.read()?)?;
         if answer.encryption != ENCRYPT_NOT_SUP && answer.encryption != ENCRYPT_OFF {
             return Err(TransportError::permanent(
-                "the server requires encryption, and TLS is `xmip-core-tls`'s (ADR-0033)",
+                "the server requires encryption, and TLS is `xmip-core-library-tls`'s (ADR-0033)",
             ));
         }
         let login = Login7::new(login.clone(), database);
