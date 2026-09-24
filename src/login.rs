@@ -9,9 +9,10 @@
 //! login on a service account is what an integration runs as. Read here
 //! as well as written, because the far-end [`crate::Session`] reads it.
 
+use codec::cursor::Cursor;
 use transport::error::{Result, protocol_error};
 
-use crate::wire::{Cursor, DEFAULT_PACKET_SIZE, from_ucs2, ucs2};
+use crate::wire::{DEFAULT_PACKET_SIZE, from_ucs2, ucs2};
 
 /// TDS 7.4, as the login writes it.
 pub const TDS_7_4: u32 = 0x7400_0004;
@@ -135,21 +136,21 @@ pub fn encode_login7(login: &Login7) -> Vec<u8> {
 /// part, or a field that points past the message.
 pub fn read_login7(body: &[u8]) -> Result<Login7> {
     let mut cursor = Cursor::new(body);
-    let _length = cursor.u32()?;
-    let version = cursor.u32()?;
+    let _length = cursor.u32_le()?;
+    let version = cursor.u32_le()?;
     if !(0x72..=0x74).contains(&(version >> 24)) {
         return Err(protocol_error(format!(
             "TDS {version:#010x} is not 7.2 to 7.4"
         )));
     }
-    let packet_size = cursor.u32()?;
+    let packet_size = cursor.u32_le()?;
     cursor.skip(12)?; // program version, process id, connection id
     cursor.skip(4)?; // the four flag bytes
     cursor.skip(8)?; // time zone, LCID
     let mut fields: Vec<Vec<u8>> = Vec::with_capacity(FIELDS);
     for _ in 0..FIELDS {
-        let offset = usize::from(cursor.u16()?);
-        let chars = usize::from(cursor.u16()?);
+        let offset = usize::from(cursor.u16_le()?);
+        let chars = usize::from(cursor.u16_le()?);
         let bytes = body
             .get(offset..offset + chars * 2)
             .ok_or_else(|| protocol_error("a login field that points past the message"))?;

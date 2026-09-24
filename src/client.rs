@@ -6,6 +6,7 @@ use std::io::BufReader;
 use std::net::{Shutdown, TcpStream};
 use std::time::Duration;
 
+use codec::sql::Delimiter;
 use transport::error::{Result, TransportError, protocol_error};
 use transport::socket;
 
@@ -188,13 +189,13 @@ pub fn sql_error(message: &Message) -> TransportError {
 /// a Stream is UTF-8.
 #[must_use]
 pub fn quote_literal(text: &str) -> String {
-    format!("N'{}'", text.replace('\'', "''"))
+    format!("N{}", Delimiter::STRING.quote(text))
 }
 
 /// `name` as an identifier: bracketed, every closing bracket doubled.
 #[must_use]
 pub fn quote_identifier(name: &str) -> String {
-    format!("[{}]", name.replace(']', "]]"))
+    Delimiter::BRACKET.quote(name)
 }
 
 #[cfg(test)]

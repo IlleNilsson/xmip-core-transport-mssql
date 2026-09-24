@@ -1,9 +1,11 @@
 //! One INSERT taken apart, so the far-end [`crate::Session`] can record
 //! what a client wrote without being a SQL parser. The statement's shape is
 //! the capability's (`transport::sql`, ADR-0044); the T-SQL dialect is
-//! here — bracketed or bare identifiers and a string or `0x` literal.
-//! Anything else is not an insert this crate serves.
+//! here — bracketed or bare identifiers and a string or `0x` literal, the
+//! doubled delimiters read by `codec::sql`. Anything else is not an insert
+//! this crate serves.
 
+use codec::sql::Delimiter;
 use transport::sql;
 
 use crate::binary::from_hex_literal;
@@ -21,20 +23,8 @@ pub fn parse_insert(statement: &str) -> Option<(String, String, Vec<u8>)> {
 /// follows it.
 fn identifier(rest: &str) -> Option<(String, &str)> {
     let rest = rest.trim_start();
-    if let Some(mut inner) = rest.strip_prefix('[') {
-        let mut name = String::new();
-        loop {
-            let end = inner.find(']')?;
-            name.push_str(&inner[..end]);
-            inner = &inner[end + 1..];
-            match inner.strip_prefix(']') {
-                Some(after) => {
-                    name.push(']');
-                    inner = after;
-                }
-                None => return Some((name, inner)),
-            }
-        }
+    if rest.starts_with('[') {
+        return Delimiter::BRACKET.unquote_prefix(rest).ok();
     }
     let end = rest
         .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '#' | '@')))
@@ -52,20 +42,9 @@ fn literal(rest: &str) -> Option<(Vec<u8>, &str)> {
             .unwrap_or(digits.len());
         return Some((from_hex_literal(&rest[..2 + end])?, &digits[end..]));
     }
-    let quoted = rest.strip_prefix('N').unwrap_or(rest).strip_prefix('\'')?;
-    let mut value = String::new();
-    let mut chars = quoted.char_indices().peekable();
-    while let Some((at, c)) = chars.next() {
-        match c {
-            '\'' if chars.peek().is_some_and(|(_, next)| *next == '\'') => {
-                chars.next();
-                value.push('\'');
-            }
-            '\'' => return Some((value.into_bytes(), &quoted[at + 1..])),
-            other => value.push(other),
-        }
-    }
-    None
+    let quoted = rest.strip_prefix('N').unwrap_or(rest);
+    let (value, after) = Delimiter::STRING.unquote_prefix(quoted).ok()?;
+    Some((value.into_bytes(), after))
 }
 
 #[cfg(test)]

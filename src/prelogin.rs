@@ -8,9 +8,8 @@
 //! MARS is off: one batch at a time is what a Location runs. Anything
 //! else in the table is read past.
 
+use codec::cursor::Cursor;
 use transport::error::{Result, protocol_error};
-
-use crate::wire::Cursor;
 
 /// The sender's version: four bytes of version, two of sub-build.
 pub const VERSION: u8 = 0x00;

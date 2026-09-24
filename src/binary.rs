@@ -9,13 +9,12 @@
 //! Text that happens to start with `0x` and run in hex is read as bytes;
 //! that is the same ambiguity a T-SQL constant has, and no worse.
 
-use transport::hex::{hex, unhex};
 pub use transport::sql::is_text;
 
 /// `bytes` as the binary literal: `0x` then two lower-case digits a byte.
 #[must_use]
 pub fn hex_literal(bytes: &[u8]) -> String {
-    format!("0x{}", hex(bytes))
+    format!("0x{}", codec::hex::encode(bytes))
 }
 
 /// The bytes a binary literal names, or `None` when `text` is not one.
@@ -24,7 +23,7 @@ pub fn from_hex_literal(text: &str) -> Option<Vec<u8>> {
     let digits = text
         .strip_prefix("0x")
         .or_else(|| text.strip_prefix("0X"))?;
-    unhex(digits).ok()
+    codec::hex::decode(digits).ok()
 }
 
 /// A column value as the bytes it carries: decoded when a binary literal,

@@ -2,14 +2,15 @@
 //! header — type, status, length, SPID, packet id, window — ahead of a
 //! payload, and a message longer than one packet split across several,
 //! the last marked end-of-message. Inside a payload integers are
-//! little-endian and text is UCS-2 counted in characters, which is what
-//! the `Cursor` and the helpers here read and write; what a message means
+//! little-endian, read and written through codec's byte cursor and writer,
+//! and text is UCS-2 counted in characters, which [`Tds`] reads off the
+//! cursor and [`TdsWrite`] writes; what a message means
 //! is `prelogin.rs`, `login.rs`, `batch.rs` and `token.rs`.
 
 use std::io::{Read, Write};
 
-use std::ops::{Deref, DerefMut};
-use transport::cursor::Cursor as Shared;
+use codec::cursor::Cursor;
+use codec::writer::ByteWriter;
 use transport::error::{Result, classify, protocol_error};
 
 /// A SQL batch, from the client.
@@ -38,14 +39,14 @@ pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 #[must_use]
 pub fn packet(kind: u8, status: u8, payload: &[u8], id: u8) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LENGTH + payload.len());
-    out.push(kind);
-    out.push(status);
     let length = u16::try_from(HEADER_LENGTH + payload.len()).unwrap_or(u16::MAX);
-    out.extend_from_slice(&length.to_be_bytes());
-    out.extend_from_slice(&0u16.to_be_bytes()); // SPID
-    out.push(id);
-    out.push(0); // window
-    out.extend_from_slice(payload);
+    out.byte(kind)
+        .byte(status)
+        .u16_be(length)
+        .u16_be(0) // SPID
+        .byte(id)
+        .byte(0) // window
+        .bytes(payload);
     out
 }
 
@@ -175,120 +176,70 @@ pub fn from_ucs2(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
-/// `text` as a `B_VARCHAR`: a byte counting characters, then UCS-2. Cut at
-/// 255 characters, which is what the count can say.
-pub fn push_b_varchar(out: &mut Vec<u8>, text: &str) {
-    let units: Vec<u16> = text.encode_utf16().take(usize::from(u8::MAX)).collect();
-    out.push(u8::try_from(units.len()).unwrap_or(u8::MAX));
-    out.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
-}
-
-/// `text` as a `US_VARCHAR`: a u16 counting characters, then UCS-2. Cut at
-/// 65535 characters.
-pub fn push_us_varchar(out: &mut Vec<u8>, text: &str) {
-    let units: Vec<u16> = text.encode_utf16().take(usize::from(u16::MAX)).collect();
-    out.extend_from_slice(&u16::try_from(units.len()).unwrap_or(u16::MAX).to_le_bytes());
-    out.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
-}
-
-/// Reads a payload's fields in order: the transport's cursor, with TDS's
-/// fields named on it.
-pub struct Cursor<'a>(Shared<'a>);
-
-impl<'a> Deref for Cursor<'a> {
-    type Target = Shared<'a>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Cursor<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl<'a> Cursor<'a> {
-    /// A cursor at the start of `bytes`.
-    #[must_use]
-    pub const fn new(bytes: &'a [u8]) -> Self {
-        Self(Shared::new(bytes))
-    }
-
-    /// The next little-endian u16.
-    ///
-    /// # Errors
-    /// Fewer than two bytes remain.
-    pub fn u16(&mut self) -> Result<u16> {
-        Ok(u16::from_le_bytes(self.array()?))
-    }
-
-    /// The next big-endian u16, which the pre-login's table uses alone.
-    ///
-    /// # Errors
-    /// Fewer than two bytes remain.
-    pub fn u16_be(&mut self) -> Result<u16> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    /// The next little-endian u32.
-    ///
-    /// # Errors
-    /// Fewer than four bytes remain.
-    pub fn u32(&mut self) -> Result<u32> {
-        Ok(u32::from_le_bytes(self.array()?))
-    }
-
-    /// The next big-endian u32, which the login acknowledgement's version
-    /// uses alone.
-    ///
-    /// # Errors
-    /// Fewer than four bytes remain.
-    pub fn u32_be(&mut self) -> Result<u32> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    /// The next little-endian i32.
-    ///
-    /// # Errors
-    /// Fewer than four bytes remain.
-    pub fn i32(&mut self) -> Result<i32> {
-        Ok(i32::from_le_bytes(self.array()?))
-    }
-
-    /// The next little-endian u64.
-    ///
-    /// # Errors
-    /// Fewer than eight bytes remain.
-    pub fn u64(&mut self) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.array()?))
-    }
-
+/// TDS's own fields, read off codec's cursor: text in UCS-2 counted in
+/// characters. Integers are codec's, little-endian (`u16_le`, `u32_le`)
+/// but for the pre-login's table and the login acknowledgement's version,
+/// which are big-endian.
+pub trait Tds {
     /// The next `chars` characters of UCS-2 as text.
     ///
     /// # Errors
     /// Fewer than twice `chars` bytes remain.
-    pub fn ucs2(&mut self, chars: usize) -> Result<String> {
-        Ok(from_ucs2(self.take(chars * 2)?))
-    }
+    fn ucs2(&mut self, chars: usize) -> Result<String>;
 
     /// The next `B_VARCHAR`: a byte counting characters, then UCS-2.
     ///
     /// # Errors
     /// The text runs past the message.
-    pub fn b_varchar(&mut self) -> Result<String> {
-        let chars = usize::from(self.byte()?);
-        self.ucs2(chars)
-    }
+    fn b_varchar(&mut self) -> Result<String>;
 
     /// The next `US_VARCHAR`: a u16 counting characters, then UCS-2.
     ///
     /// # Errors
     /// The text runs past the message.
-    pub fn us_varchar(&mut self) -> Result<String> {
-        let chars = usize::from(self.u16()?);
+    fn us_varchar(&mut self) -> Result<String>;
+}
+
+impl Tds for Cursor<'_> {
+    fn ucs2(&mut self, chars: usize) -> Result<String> {
+        Ok(from_ucs2(self.take(chars * 2)?))
+    }
+
+    fn b_varchar(&mut self) -> Result<String> {
+        let chars = usize::from(self.byte()?);
         self.ucs2(chars)
+    }
+
+    fn us_varchar(&mut self) -> Result<String> {
+        let chars = usize::from(self.u16_le()?);
+        self.ucs2(chars)
+    }
+}
+
+/// TDS's own fields, written beside codec's writer.
+pub trait TdsWrite {
+    /// `text` as a `B_VARCHAR`: a byte counting characters, then UCS-2.
+    /// Cut at 255 characters, which is what the count can say.
+    fn b_varchar(&mut self, text: &str) -> &mut Self;
+
+    /// `text` as a `US_VARCHAR`: a u16 counting characters, then UCS-2.
+    /// Cut at 65535 characters.
+    fn us_varchar(&mut self, text: &str) -> &mut Self;
+}
+
+impl TdsWrite for Vec<u8> {
+    fn b_varchar(&mut self, text: &str) -> &mut Self {
+        let units: Vec<u16> = text.encode_utf16().take(usize::from(u8::MAX)).collect();
+        self.byte(u8::try_from(units.len()).unwrap_or(u8::MAX));
+        self.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
+        self
+    }
+
+    fn us_varchar(&mut self, text: &str) -> &mut Self {
+        let units: Vec<u16> = text.encode_utf16().take(usize::from(u16::MAX)).collect();
+        self.u16_le(u16::try_from(units.len()).unwrap_or(u16::MAX));
+        self.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
+        self
     }
 }
 
@@ -362,24 +313,25 @@ mod tests {
         assert_eq!(from_ucs2(&ucs2("räksmörgås")), "räksmörgås");
         assert_eq!(from_ucs2(&[b'a', 0, b'b']), "a", "an odd byte is dropped");
         let mut body = Vec::new();
-        push_b_varchar(&mut body, "id");
-        push_us_varchar(&mut body, "payload");
-        body.extend_from_slice(&7u16.to_le_bytes());
-        body.extend_from_slice(&7u16.to_be_bytes());
-        body.extend_from_slice(&(-3i32).to_le_bytes());
-        body.extend_from_slice(&9u64.to_le_bytes());
+        body.b_varchar("id")
+            .us_varchar("payload")
+            .u16_le(7)
+            .u16_be(7)
+            .i32_le(-3)
+            .u64_le(9);
         let mut cursor = Cursor::new(&body);
         assert_eq!(cursor.b_varchar().expect("b"), "id");
         assert_eq!(cursor.us_varchar().expect("us"), "payload");
-        assert_eq!(cursor.u16().expect("le"), 7);
+        assert_eq!(cursor.u16_le().expect("le"), 7);
         assert_eq!(cursor.u16_be().expect("be"), 7);
-        assert_eq!(cursor.i32().expect("i32"), -3);
-        assert_eq!(cursor.u64().expect("u64"), 9);
+        assert_eq!(cursor.i32_le().expect("i32"), -3);
+        assert_eq!(cursor.u64_le().expect("u64"), 9);
         assert!(cursor.is_empty());
-        assert!(cursor.byte().is_err(), "past the end");
+        let error = cursor.byte().expect_err("past the end");
+        assert!(error.message.contains("runs past"), "{}", error.message);
         let long = "x".repeat(300);
         let mut body = Vec::new();
-        push_b_varchar(&mut body, &long);
+        body.b_varchar(&long);
         assert_eq!(body[0], 255, "cut at what the count can say");
         assert_eq!(body.len(), 1 + 255 * 2);
     }
