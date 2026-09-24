@@ -6,9 +6,10 @@
 //! Read here as well as written, because the far-end [`crate::Session`]
 //! reads exactly this.
 
+use codec::cursor::Cursor;
 use transport::error::{Result, protocol_error};
 
-use crate::wire::{Cursor, from_ucs2, ucs2};
+use crate::wire::{from_ucs2, ucs2};
 
 /// The transaction-descriptor header, the one every batch carries.
 pub const TRANSACTION_HEADER: u16 = 0x0002;
@@ -35,7 +36,7 @@ pub fn encode_batch(sql: &str) -> Vec<u8> {
 /// A headers length under four or past the message.
 pub fn read_batch(body: &[u8]) -> Result<String> {
     let mut cursor = Cursor::new(body);
-    let total = usize::try_from(cursor.u32()?).unwrap_or(usize::MAX);
+    let total = usize::try_from(cursor.u32_le()?).unwrap_or(usize::MAX);
     let rest = total
         .checked_sub(4)
         .ok_or_else(|| protocol_error("a headers length under four"))?;

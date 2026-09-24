@@ -6,10 +6,12 @@
 //! outside those is refused by its byte, because not every token's
 //! length is self-describing and reading past an unknown one is guessing.
 
+use codec::cursor::Cursor;
+use codec::writer::ByteWriter;
 use transport::error::{Result, protocol_error};
 
 use crate::column::{Column, read_type_info, read_value, write_type_info, write_value};
-use crate::wire::{Cursor, push_b_varchar, push_us_varchar};
+use crate::wire::{Tds, TdsWrite};
 
 /// The environment changed: a database, a language, a packet size.
 pub const ENVCHANGE: u8 = 0xE3;
@@ -121,31 +123,30 @@ pub fn encode_tokens(tokens: &[Token]) -> Vec<u8> {
         match token {
             Token::EnvChange { kind, new, old } => {
                 let mut body = vec![*kind];
-                push_b_varchar(&mut body, new);
-                push_b_varchar(&mut body, old);
+                body.b_varchar(new).b_varchar(old);
                 push_with_length(&mut out, ENVCHANGE, &body);
             }
             Token::Info(message) => push_with_length(&mut out, INFO, &message_body(message)),
             Token::Error(message) => push_with_length(&mut out, ERROR, &message_body(message)),
             Token::LoginAck { version, program } => {
                 let mut body = vec![1u8]; // the SQL_TSQL interface
-                body.extend_from_slice(&version.to_be_bytes());
-                push_b_varchar(&mut body, program);
-                body.extend_from_slice(&[16, 0, 0, 0]); // the program's version
+                body.u32_be(*version)
+                    .b_varchar(program)
+                    .bytes(&[16, 0, 0, 0]); // the program's version
                 push_with_length(&mut out, LOGINACK, &body);
             }
             Token::ColMetadata(declared) => {
                 out.push(COLMETADATA);
                 if declared.is_empty() {
-                    out.extend_from_slice(&NO_COLUMNS.to_le_bytes());
+                    out.u16_le(NO_COLUMNS);
                 } else {
                     let count = u16::try_from(declared.len()).unwrap_or(u16::MAX - 1);
-                    out.extend_from_slice(&count.to_le_bytes());
+                    out.u16_le(count);
                     for column in declared {
-                        out.extend_from_slice(&0u32.to_le_bytes()); // user type
-                        out.extend_from_slice(&0x0001u16.to_le_bytes()); // nullable
+                        out.u32_le(0) // user type
+                            .u16_le(0x0001); // nullable
                         write_type_info(&mut out, column.kind);
-                        push_b_varchar(&mut out, &column.name);
+                        out.b_varchar(&column.name);
                     }
                 }
                 columns.clone_from(declared);
@@ -161,7 +162,7 @@ pub fn encode_tokens(tokens: &[Token]) -> Vec<u8> {
             Token::DoneInProc { status, rows } => push_done(&mut out, DONEINPROC, *status, *rows),
             Token::ReturnStatus(status) => {
                 out.push(RETURNSTATUS);
-                out.extend_from_slice(&status.to_le_bytes());
+                out.i32_le(*status);
             }
             Token::Order(numbers) => {
                 let body: Vec<u8> = numbers.iter().flat_map(|n| n.to_le_bytes()).collect();
@@ -173,40 +174,40 @@ pub fn encode_tokens(tokens: &[Token]) -> Vec<u8> {
 }
 
 fn push_with_length(out: &mut Vec<u8>, token: u8, body: &[u8]) {
-    out.push(token);
-    out.extend_from_slice(&u16::try_from(body.len()).unwrap_or(u16::MAX).to_le_bytes());
-    out.extend_from_slice(body);
+    out.byte(token)
+        .u16_le(u16::try_from(body.len()).unwrap_or(u16::MAX))
+        .bytes(body);
 }
 
 fn push_done(out: &mut Vec<u8>, token: u8, status: u16, rows: u64) {
-    out.push(token);
-    out.extend_from_slice(&status.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // the current command
-    out.extend_from_slice(&rows.to_le_bytes());
+    out.byte(token)
+        .u16_le(status)
+        .u16_le(0) // the current command
+        .u64_le(rows);
 }
 
 fn message_body(message: &Message) -> Vec<u8> {
     let mut body = Vec::new();
-    body.extend_from_slice(&message.number.to_le_bytes());
-    body.push(message.state);
-    body.push(message.class);
-    push_us_varchar(&mut body, &message.text);
-    push_b_varchar(&mut body, &message.server);
-    push_b_varchar(&mut body, &message.procedure);
-    body.extend_from_slice(&message.line.to_le_bytes());
+    body.i32_le(message.number)
+        .byte(message.state)
+        .byte(message.class)
+        .us_varchar(&message.text)
+        .b_varchar(&message.server)
+        .b_varchar(&message.procedure)
+        .u32_le(message.line);
     body
 }
 
 fn read_message(body: &[u8]) -> Result<Message> {
     let mut cursor = Cursor::new(body);
     Ok(Message {
-        number: cursor.i32()?,
+        number: cursor.i32_le()?,
         state: cursor.byte()?,
         class: cursor.byte()?,
         text: cursor.us_varchar()?,
         server: cursor.b_varchar()?,
         procedure: cursor.b_varchar()?,
-        line: cursor.u32()?,
+        line: cursor.u32_le()?,
     })
 }
 
@@ -265,7 +266,7 @@ impl<'a> TokenStream<'a> {
                 }
             }
             COLMETADATA => {
-                let count = self.cursor.u16()?;
+                let count = self.cursor.u16_le()?;
                 let mut columns = Vec::new();
                 if count != NO_COLUMNS {
                     for _ in 0..count {
@@ -297,21 +298,21 @@ impl<'a> TokenStream<'a> {
                 Token::Row(values)
             }
             DONE | DONEPROC | DONEINPROC => {
-                let status = self.cursor.u16()?;
+                let status = self.cursor.u16_le()?;
                 self.cursor.skip(2)?;
-                let rows = self.cursor.u64()?;
+                let rows = self.cursor.u64_le()?;
                 match token {
                     DONE => Token::Done { status, rows },
                     DONEPROC => Token::DoneProc { status, rows },
                     _ => Token::DoneInProc { status, rows },
                 }
             }
-            RETURNSTATUS => Token::ReturnStatus(self.cursor.i32()?),
+            RETURNSTATUS => Token::ReturnStatus(self.cursor.i32_le()?),
             ORDER => {
                 let mut inner = self.body()?;
                 let mut numbers = Vec::new();
                 while !inner.is_empty() {
-                    numbers.push(inner.u16()?);
+                    numbers.push(inner.u16_le()?);
                 }
                 Token::Order(numbers)
             }
@@ -325,7 +326,7 @@ impl<'a> TokenStream<'a> {
 
     /// A cursor over the body of a token that carries its length.
     fn body(&mut self) -> Result<Cursor<'a>> {
-        let length = usize::from(self.cursor.u16()?);
+        let length = usize::from(self.cursor.u16_le()?);
         Ok(Cursor::new(self.cursor.take(length)?))
     }
 }

@@ -8,10 +8,11 @@
 //! type is refused by its type byte when its metadata arrives, and the
 //! operator casts it in the query.
 
+use codec::cursor::Cursor;
 use transport::error::{Result, protocol_error};
 
 use crate::binary::{column_bytes, hex_literal};
-use crate::wire::{Cursor, from_ucs2, ucs2};
+use crate::wire::{from_ucs2, ucs2};
 
 /// A nullable integer of one, two, four or eight bytes.
 pub const INTN: u8 = 0x26;
@@ -114,16 +115,16 @@ pub fn read_type_info(cursor: &mut Cursor<'_>) -> Result<ColumnType> {
             ColumnType::BitN
         }
         NVARCHAR => {
-            let max = cursor.u16()?;
+            let max = cursor.u16_le()?;
             cursor.skip(5)?;
             ColumnType::NVarChar(max)
         }
         BIGVARCHAR => {
-            let max = cursor.u16()?;
+            let max = cursor.u16_le()?;
             cursor.skip(5)?;
             ColumnType::VarChar(max)
         }
-        BIGVARBINARY => ColumnType::VarBinary(cursor.u16()?),
+        BIGVARBINARY => ColumnType::VarBinary(cursor.u16_le()?),
         other => {
             return Err(protocol_error(format!(
                 "column type {other:#04x} is not one this crate reads; cast it in the query"
@@ -185,7 +186,7 @@ pub fn read_value(cursor: &mut Cursor<'_>, kind: ColumnType) -> Result<Option<St
                 other => return Err(protocol_error(format!("an integer {other} bytes wide"))),
             }
         }
-        ColumnType::Int => Some(cursor.i32()?.to_string()),
+        ColumnType::Int => Some(cursor.i32_le()?.to_string()),
         ColumnType::BigInt => {
             let mut eight = [0u8; 8];
             eight.copy_from_slice(cursor.take(8)?);
@@ -224,7 +225,7 @@ fn read_bytes(cursor: &mut Cursor<'_>, max: u16) -> Result<Option<Vec<u8>>> {
     if max == MAX {
         return read_plp(cursor);
     }
-    let length = cursor.u16()?;
+    let length = cursor.u16_le()?;
     if length == MAX {
         return Ok(None);
     }
@@ -250,13 +251,13 @@ pub fn write_plp(out: &mut Vec<u8>, bytes: Option<&[u8]>) {
 /// # Errors
 /// Chunks that do not add up to the total, or that break off.
 pub fn read_plp(cursor: &mut Cursor<'_>) -> Result<Option<Vec<u8>>> {
-    let total = cursor.u64()?;
+    let total = cursor.u64_le()?;
     if total == PLP_NULL {
         return Ok(None);
     }
     let mut out = Vec::new();
     loop {
-        let chunk = cursor.u32()?;
+        let chunk = cursor.u32_le()?;
         if chunk == 0 {
             break;
         }
