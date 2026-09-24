@@ -9,8 +9,6 @@
 use codec::cursor::Cursor;
 use transport::error::{Result, protocol_error};
 
-use crate::wire::{from_ucs2, ucs2};
-
 /// The transaction-descriptor header, the one every batch carries.
 pub const TRANSACTION_HEADER: u16 = 0x0002;
 /// `ALL_HEADERS` as this crate writes it: the total, then one header of
@@ -26,7 +24,7 @@ pub fn encode_batch(sql: &str) -> Vec<u8> {
     out.extend_from_slice(&TRANSACTION_HEADER.to_le_bytes());
     out.extend_from_slice(&0u64.to_le_bytes()); // no transaction
     out.extend_from_slice(&1u32.to_le_bytes()); // one outstanding request
-    out.extend(ucs2(sql));
+    out.extend(codec::utf16::encode(sql));
     out
 }
 
@@ -43,7 +41,7 @@ pub fn read_batch(body: &[u8]) -> Result<String> {
     cursor
         .skip(rest)
         .map_err(|_| protocol_error("headers that run past the batch"))?;
-    Ok(from_ucs2(cursor.remaining()))
+    Ok(codec::utf16::decode_lossy(cursor.remaining()))
 }
 
 #[cfg(test)]

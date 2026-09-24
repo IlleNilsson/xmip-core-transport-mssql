@@ -207,7 +207,7 @@ impl Transport for MssqlTransport {
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
         let (server, database, table, column) = self.resolve(target)?;
         let literal = match std::str::from_utf8(bytes) {
-            Ok(text) if binary::is_text(bytes) => quote_literal(text),
+            Ok(text) if transport::sql::is_text(bytes) => quote_literal(text),
             _ => binary::hex_literal(bytes),
         };
         let mut client = self.connect_to(server, database)?;
@@ -239,7 +239,7 @@ impl MssqlTransport {
 }
 
 impl Accepting for MssqlTransport {
-    fn take_one(&self, listener: &TcpListener) -> Result<Arrived> {
+    fn take_one(self, listener: &TcpListener) -> Result<Arrived> {
         let mut session = self.accept_one(listener)?;
         let arrived = session
             .next_insert()?
@@ -253,8 +253,7 @@ impl Accepting for MssqlTransport {
 
 impl Loopback for MssqlTransport {
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        let (listener, address) = self.bind()?;
-        Ok(Box::new(Listening::new(self.clone(), listener, address)))
+        Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
     }
 
     /// INSERT the payload as one column of one row — text as an `N'…'`

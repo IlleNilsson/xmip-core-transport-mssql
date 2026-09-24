@@ -12,7 +12,7 @@
 use codec::cursor::Cursor;
 use transport::error::{Result, protocol_error};
 
-use crate::wire::{DEFAULT_PACKET_SIZE, from_ucs2, ucs2};
+use crate::wire::DEFAULT_PACKET_SIZE;
 
 /// TDS 7.4, as the login writes it.
 pub const TDS_7_4: u32 = 0x7400_0004;
@@ -95,17 +95,17 @@ pub fn encode_login7(login: &Login7) -> Vec<u8> {
     out.extend_from_slice(&[0xE0, 0x02, 0x00, 0x00]);
     out.extend_from_slice(&0i32.to_le_bytes()); // time zone
     out.extend_from_slice(&0u32.to_le_bytes()); // LCID
-    let password = obscure(&ucs2(&login.login.password));
+    let password = obscure(&codec::utf16::encode(&login.login.password));
     let fields: [Vec<u8>; FIELDS] = [
-        ucs2(&login.hostname),
-        ucs2(&login.login.user),
+        codec::utf16::encode(&login.hostname),
+        codec::utf16::encode(&login.login.user),
         password,
-        ucs2(&login.app_name),
-        ucs2(&login.server_name),
+        codec::utf16::encode(&login.app_name),
+        codec::utf16::encode(&login.server_name),
         Vec::new(), // the extension, unused
-        ucs2(&login.library),
-        ucs2(&login.language),
-        ucs2(&login.database),
+        codec::utf16::encode(&login.library),
+        codec::utf16::encode(&login.language),
+        codec::utf16::encode(&login.database),
     ];
     let mut tail = Vec::new();
     for field in &fields {
@@ -158,15 +158,15 @@ pub fn read_login7(body: &[u8]) -> Result<Login7> {
     }
     Ok(Login7 {
         login: Login {
-            user: from_ucs2(&fields[1]),
-            password: from_ucs2(&reveal(&fields[2])),
+            user: codec::utf16::decode_lossy(&fields[1]),
+            password: codec::utf16::decode_lossy(&reveal(&fields[2])),
         },
-        database: from_ucs2(&fields[8]),
-        hostname: from_ucs2(&fields[0]),
-        app_name: from_ucs2(&fields[3]),
-        server_name: from_ucs2(&fields[4]),
-        library: from_ucs2(&fields[6]),
-        language: from_ucs2(&fields[7]),
+        database: codec::utf16::decode_lossy(&fields[8]),
+        hostname: codec::utf16::decode_lossy(&fields[0]),
+        app_name: codec::utf16::decode_lossy(&fields[3]),
+        server_name: codec::utf16::decode_lossy(&fields[4]),
+        library: codec::utf16::decode_lossy(&fields[6]),
+        language: codec::utf16::decode_lossy(&fields[7]),
         packet_size,
     })
 }
