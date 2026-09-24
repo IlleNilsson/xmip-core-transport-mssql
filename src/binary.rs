@@ -9,8 +9,6 @@
 //! Text that happens to start with `0x` and run in hex is read as bytes;
 //! that is the same ambiguity a T-SQL constant has, and no worse.
 
-pub use transport::sql::is_text;
-
 /// `bytes` as the binary literal: `0x` then two lower-case digits a byte.
 #[must_use]
 pub fn hex_literal(bytes: &[u8]) -> String {

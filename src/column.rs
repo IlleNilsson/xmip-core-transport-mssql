@@ -12,7 +12,6 @@ use codec::cursor::Cursor;
 use transport::error::{Result, protocol_error};
 
 use crate::binary::{column_bytes, hex_literal};
-use crate::wire::{from_ucs2, ucs2};
 
 /// A nullable integer of one, two, four or eight bytes.
 pub const INTN: u8 = 0x26;
@@ -155,7 +154,9 @@ pub fn write_value(out: &mut Vec<u8>, kind: ColumnType, value: Option<&str>) {
             None => out.push(0),
             Some(_) => out.extend_from_slice(&[1, u8::from(truthy(value))]),
         },
-        ColumnType::NVarChar(max) => write_bytes(out, max, value.map(ucs2).as_deref()),
+        ColumnType::NVarChar(max) => {
+            write_bytes(out, max, value.map(codec::utf16::encode).as_deref());
+        }
         ColumnType::VarChar(max) => write_bytes(out, max, value.map(str::as_bytes)),
         ColumnType::VarBinary(max) => {
             let bytes = value.map(|text| column_bytes(text.to_string()));
@@ -197,7 +198,9 @@ pub fn read_value(cursor: &mut Cursor<'_>, kind: ColumnType) -> Result<Option<St
             0 => None,
             _ => Some(u8::from(cursor.byte()? != 0).to_string()),
         },
-        ColumnType::NVarChar(max) => read_bytes(cursor, max)?.map(|b| from_ucs2(&b)),
+        ColumnType::NVarChar(max) => {
+            read_bytes(cursor, max)?.map(|b| codec::utf16::decode_lossy(&b))
+        }
         ColumnType::VarChar(max) => {
             read_bytes(cursor, max)?.map(|b| String::from_utf8_lossy(&b).into_owned())
         }

@@ -158,24 +158,6 @@ pub fn read_message(reader: &mut impl Read) -> Result<Option<(u8, Vec<u8>)>> {
     }
 }
 
-/// `text` as UCS-2, which is UTF-16 little-endian on this wire.
-#[must_use]
-pub fn ucs2(text: &str) -> Vec<u8> {
-    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
-}
-
-/// UCS-2 `bytes` as text, lossily; an odd trailing byte is dropped.
-#[must_use]
-pub fn from_ucs2(bytes: &[u8]) -> String {
-    let units: Vec<u16> = bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| u16::from_le_bytes(*pair))
-        .collect();
-    String::from_utf16_lossy(&units)
-}
-
 /// TDS's own fields, read off codec's cursor: text in UCS-2 counted in
 /// characters. Integers are codec's, little-endian (`u16_le`, `u32_le`)
 /// but for the pre-login's table and the login acknowledgement's version,
@@ -202,7 +184,7 @@ pub trait Tds {
 
 impl Tds for Cursor<'_> {
     fn ucs2(&mut self, chars: usize) -> Result<String> {
-        Ok(from_ucs2(self.take(chars * 2)?))
+        Ok(codec::utf16::decode_lossy(self.take(chars * 2)?))
     }
 
     fn b_varchar(&mut self) -> Result<String> {
@@ -229,18 +211,23 @@ pub trait TdsWrite {
 
 impl TdsWrite for Vec<u8> {
     fn b_varchar(&mut self, text: &str) -> &mut Self {
-        let units: Vec<u16> = text.encode_utf16().take(usize::from(u8::MAX)).collect();
-        self.byte(u8::try_from(units.len()).unwrap_or(u8::MAX));
-        self.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
-        self
+        let units = counted(text, usize::from(u8::MAX));
+        self.byte(u8::try_from(units.len() / 2).unwrap_or(u8::MAX));
+        self.bytes(&units)
     }
 
     fn us_varchar(&mut self, text: &str) -> &mut Self {
-        let units: Vec<u16> = text.encode_utf16().take(usize::from(u16::MAX)).collect();
-        self.u16_le(u16::try_from(units.len()).unwrap_or(u16::MAX));
-        self.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
-        self
+        let units = counted(text, usize::from(u16::MAX));
+        self.u16_le(u16::try_from(units.len() / 2).unwrap_or(u16::MAX));
+        self.bytes(&units)
     }
+}
+
+/// `text` as UCS-2, cut at `most` characters.
+fn counted(text: &str, most: usize) -> Vec<u8> {
+    let mut units = codec::utf16::encode(text);
+    units.truncate(most * 2);
+    units
 }
 
 #[cfg(test)]
@@ -309,9 +296,6 @@ mod tests {
 
     #[test]
     fn text_and_counted_strings_round_trip() {
-        assert_eq!(ucs2("ab"), [b'a', 0, b'b', 0]);
-        assert_eq!(from_ucs2(&ucs2("räksmörgås")), "räksmörgås");
-        assert_eq!(from_ucs2(&[b'a', 0, b'b']), "a", "an odd byte is dropped");
         let mut body = Vec::new();
         body.b_varchar("id")
             .us_varchar("payload")
