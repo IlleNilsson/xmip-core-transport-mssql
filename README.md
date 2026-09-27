@@ -8,6 +8,12 @@ The bracketed identifiers and `N'…'` literals it writes and its far end reads 
 `xmip-core-library-codec`'s `sql` module, the one SQL quoting in the estate;
 which delimiter is this dialect's own.
 
+Where a send target puts its row — `<scheme>://host:port/<catalog>/<table>/<column>`,
+`host:port/<catalog>/<table>/<column>` or `<table>/<column>` — and the one
+INSERT, its table and column always quoted identifiers so a target can name
+nothing but them, are `xmip-core-transport`'s `sql` module; this crate hands
+it its `DIALECT`: the schemes `mssql` and `sqlserver`, a database, brackets.
+
 The payload column holds bytes unless the Location declares otherwise (ADR-0038:
 a payload is bytes). `column = "binary"`, the default, writes every Stream in
 the dialect's binary form (a `0x…` literal) and reads a value back only from that form;

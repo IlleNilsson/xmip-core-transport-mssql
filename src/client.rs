@@ -192,12 +192,6 @@ pub fn quote_literal(text: &str) -> String {
     format!("N{}", Delimiter::STRING.quote(text))
 }
 
-/// `name` as an identifier: bracketed, every closing bracket doubled.
-#[must_use]
-pub fn quote_identifier(name: &str) -> String {
-    Delimiter::BRACKET.quote(name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +207,7 @@ mod tests {
         assert_eq!(quote_literal("it's"), "N'it''s'");
         assert_eq!(quote_literal("back\\slash"), "N'back\\slash'");
         assert_eq!(quote_literal(""), "N''");
+        let quote_identifier = |name| crate::insert::DIALECT.quote_identifier(name);
         assert_eq!(quote_identifier("in]box"), "[in]]box]");
         assert_eq!(quote_identifier("In box"), "[In box]");
     }
