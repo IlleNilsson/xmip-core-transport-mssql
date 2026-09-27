@@ -50,12 +50,13 @@ pub mod wire;
 use std::net::TcpListener;
 use std::time::Duration;
 
-pub use client::{Client, QueryResult, quote_identifier, quote_literal};
+pub use client::{Client, QueryResult, quote_literal};
+use insert::DIALECT;
 pub use login::Login;
 pub use session::{Answer, Event, Session};
 use transport::Configured;
 use transport::claim::{NoNativeClaim, ResourceClaim};
-use transport::error::{Result, TransportError, protocol_error};
+use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
@@ -168,26 +169,6 @@ impl MssqlTransport {
         Session::accept(listener, expected.as_ref(), self.timeout)
             .map(|session| session.holding(self.column))
     }
-
-    /// Where a target names the server, database, table and column, or
-    /// some suffix of them on what this transport is configured with.
-    fn resolve<'a>(&'a self, target: &'a str) -> Result<(&'a str, &'a str, &'a str, &'a str)> {
-        let (server, path) = socket::target("mssql", target)
-            .or_else(|| socket::target("sqlserver", target))
-            .or_else(|| match target.split_once('/') {
-                Some((peer, path)) if peer.contains(':') => Some((peer, path)),
-                _ => None,
-            })
-            .unwrap_or((&self.server, target));
-        let segments: Vec<&str> = path.split('/').collect();
-        match segments.as_slice() {
-            [database, table, column] => Ok((server, database, table, column)),
-            [table, column] => Ok((server, &self.database, table, column)),
-            _ => Err(TransportError::permanent(format!(
-                "{target:?} is not database/table/column or table/column"
-            ))),
-        }
-    }
 }
 
 impl Configured for MssqlTransport {
@@ -279,18 +260,12 @@ impl Transport for MssqlTransport {
     /// Insert the bytes as one column of one row: as a binary literal, or
     /// as text where the column is declared to hold it.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
-        let (server, database, table, column) = self.resolve(target)?;
+        let to = DIALECT.destination(target, &self.server, &self.database)?;
         let literal = self
             .column
             .literal(bytes, quote_literal, binary::hex_literal)?;
-        let mut client = self.connect_to(server, database)?;
-        let sql = format!(
-            "INSERT INTO {} ({}) VALUES ({})",
-            quote_identifier(table),
-            quote_identifier(column),
-            literal
-        );
-        client.execute(&sql)?;
+        let mut client = self.connect_to(to.server, to.catalog)?;
+        client.execute(&DIALECT.insert(to.table, to.column, &literal))?;
         client.close()
     }
 
@@ -345,6 +320,7 @@ impl Loopback for MssqlTransport {
 mod tests {
     use super::*;
     use codec::unicode::Form;
+    use transport::error::TransportError;
     use transport::payload::edge_payloads;
 
     fn secs(n: u64) -> Duration {

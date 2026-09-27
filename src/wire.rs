@@ -11,6 +11,8 @@ use std::io::{Read, Write};
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
+use net::MAX_BODY;
+use transport::ceiling;
 use transport::error::{Result, classify, protocol_error};
 
 /// A SQL batch, from the client.
@@ -32,8 +34,6 @@ pub const DEFAULT_PACKET_SIZE: u16 = 4096;
 pub const MIN_PACKET_SIZE: u16 = 512;
 /// The largest, which is also what a length field can carry.
 pub const MAX_PACKET_SIZE: u16 = 32767;
-/// The most one message may be.
-pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
 /// One packet: the header, then `payload`.
 #[must_use]
@@ -105,7 +105,7 @@ pub const fn is_packet_type(kind: u8) -> bool {
 ///
 /// # Errors
 /// A read that failed, a packet shorter than its header, a change of type
-/// mid-message, a message over [`MAX_MESSAGE`], or a peer that closed
+/// mid-message, a message over `net::MAX_BODY`, or a peer that closed
 /// mid-message.
 pub fn read_message(reader: &mut impl Read) -> Result<Option<(u8, Vec<u8>)>> {
     let mut payload = Vec::new();
@@ -144,9 +144,7 @@ pub fn read_message(reader: &mut impl Read) -> Result<Option<(u8, Vec<u8>)>> {
         let body = length
             .checked_sub(HEADER_LENGTH)
             .ok_or_else(|| protocol_error("a packet shorter than its header"))?;
-        if payload.len() + body > MAX_MESSAGE {
-            return Err(protocol_error("a message over what Xmip will read"));
-        }
+        ceiling::within(payload.len() + body, MAX_BODY, "Xmip reads in one message")?;
         let at = payload.len();
         payload.resize(at + body, 0);
         reader

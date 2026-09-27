@@ -112,7 +112,15 @@ impl Session {
         };
         session.write(TABULAR_RESULT, &encode_prelogin(&answer))?;
         session.login = read_login7(&session.read(LOGIN7)?)?;
-        if expected.is_some_and(|expected| *expected != session.login.login) {
+        let presented = &session.login.login;
+        let refused = expected.is_some_and(|expected| {
+            expected.user != presented.user
+                || !codec::constant_time::equal(
+                    expected.password.as_bytes(),
+                    presented.password.as_bytes(),
+                )
+        });
+        if refused {
             let message = format!("Login failed for user '{}'.", session.user());
             session.write_tokens(&[
                 Token::Error(Message::new(LOGIN_FAILED, 14, message.clone())),

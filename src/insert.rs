@@ -6,9 +6,19 @@
 //! this crate serves.
 
 use codec::sql::Delimiter;
-use transport::sql::{self, Literal};
+use transport::sql::{Dialect, Literal};
 
 use crate::binary::from_hex_literal;
+
+/// T-SQL as the capability writes and reads it: a target opens with
+/// `mssql://` or `sqlserver://`, names a database, and an identifier is
+/// bracketed with `]]` for a bracket, or bare with `_ . # @` in it.
+pub const DIALECT: Dialect = Dialect {
+    schemes: &["mssql", "sqlserver"],
+    catalog: "database",
+    identifier: Delimiter::BRACKET,
+    bare: &['_', '.', '#', '@'],
+};
 
 /// `INSERT INTO <table> (<column>) VALUES (<literal>)` taken apart: the
 /// table, the column and the literal — a string literal's text, with or
@@ -16,20 +26,7 @@ use crate::binary::from_hex_literal;
 /// may be bracketed; anything else is `None`.
 #[must_use]
 pub fn parse_insert(statement: &str) -> Option<(String, String, Literal)> {
-    sql::parse_insert(statement, identifier, literal)
-}
-
-/// One identifier, bare or bracketed with `]]` for a bracket, and what
-/// follows it.
-fn identifier(rest: &str) -> Option<(String, &str)> {
-    let rest = rest.trim_start();
-    if rest.starts_with('[') {
-        return Delimiter::BRACKET.unquote_prefix(rest).ok();
-    }
-    let end = rest
-        .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '#' | '@')))
-        .unwrap_or(rest.len());
-    (end > 0).then(|| (rest[..end].to_string(), &rest[end..]))
+    DIALECT.parse_insert(statement, literal)
 }
 
 /// One literal — `N'…'`, `'…'` or `0x…` — and what follows it.
