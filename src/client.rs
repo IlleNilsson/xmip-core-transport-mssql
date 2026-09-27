@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use codec::sql::Delimiter;
 use transport::error::{Result, TransportError, protocol_error};
-use transport::socket;
+use transport::pool::{Pooled, alive};
+use transport::{Login, socket};
 
 use crate::batch::encode_batch;
-use crate::login::{Login, Login7, encode_login7};
+use crate::login::{Login7, encode_login7};
 use crate::prelogin::{ENCRYPT_NOT_SUP, ENCRYPT_OFF, Prelogin, encode_prelogin, read_prelogin};
 use crate::token::{DONE_COUNT, ENV_PACKET_SIZE, Message, Token, TokenStream};
 use crate::wire::{
@@ -29,6 +30,8 @@ pub struct QueryResult {
     pub rows_affected: u64,
 }
 
+/// One logged-in connection, kept between batches while the server keeps
+/// it open.
 pub struct Client {
     reader: BufReader<TcpStream>,
     pub(crate) writer: TcpStream,
@@ -168,6 +171,14 @@ impl Client {
             ))),
             None => Err(protocol_error("the server closed mid-conversation")),
         }
+    }
+}
+
+impl Pooled for Client {
+    /// While the server has not closed the connection. Each batch is read
+    /// to its last token, so nothing of one is left for the next.
+    fn usable(&mut self) -> bool {
+        alive(&self.writer)
     }
 }
 

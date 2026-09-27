@@ -10,6 +10,7 @@
 //! as well as written, because the far-end [`crate::Session`] reads it.
 
 use codec::cursor::Cursor;
+use transport::Login;
 use transport::error::{Result, protocol_error};
 
 use crate::wire::DEFAULT_PACKET_SIZE;
@@ -21,25 +22,8 @@ const FIXED_LENGTH: usize = 94;
 /// The fields in the order the offset table names them.
 const FIELDS: usize = 9;
 
-/// Who logs in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Login {
-    pub user: String,
-    pub password: String,
-}
-
-impl Login {
-    /// `user` with `password`.
-    #[must_use]
-    pub fn new(user: impl Into<String>, password: impl Into<String>) -> Self {
-        Self {
-            user: user.into(),
-            password: password.into(),
-        }
-    }
-}
-
-/// The whole login message.
+/// The whole login message: who logs in, the transport capability's
+/// [`Login`], and what the message says beside it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Login7 {
     pub login: Login,

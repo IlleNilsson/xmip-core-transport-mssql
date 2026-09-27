@@ -12,15 +12,14 @@ use std::io::BufReader;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
-use transport::Arrived;
 use transport::error::{Result, TransportError, protocol_error};
-use transport::socket;
 use transport::sql::{self, Answering, Inserted, Rows};
+use transport::{Arrived, Login, socket};
 
 use crate::batch::read_batch;
 use crate::column::Column;
 use crate::insert::parse_insert;
-use crate::login::{Login, Login7, TDS_7_4, read_login7};
+use crate::login::{Login7, TDS_7_4, read_login7};
 use crate::prelogin::{Prelogin, encode_prelogin, read_prelogin};
 use crate::token::{
     DONE_COUNT, DONE_ERROR, ENV_DATABASE, ENV_PACKET_SIZE, Message, Token, encode_tokens,
