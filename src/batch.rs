@@ -31,7 +31,8 @@ pub fn encode_batch(sql: &str) -> Vec<u8> {
 /// The SQL a payload carries, its headers read past.
 ///
 /// # Errors
-/// A headers length under four or past the message.
+/// A headers length under four or past the message, or SQL that is not
+/// UTF-16.
 pub fn read_batch(body: &[u8]) -> Result<String> {
     let mut cursor = Cursor::new(body);
     let total = usize::try_from(cursor.u32_le()?).unwrap_or(usize::MAX);
@@ -41,7 +42,7 @@ pub fn read_batch(body: &[u8]) -> Result<String> {
     cursor
         .skip(rest)
         .map_err(|_| protocol_error("headers that run past the batch"))?;
-    Ok(codec::utf16::decode_lossy(cursor.remaining()))
+    Ok(codec::utf16::decode(cursor.remaining())?)
 }
 
 #[cfg(test)]
@@ -63,5 +64,8 @@ mod tests {
         assert!(read_batch(&[2, 0, 0, 0]).is_err(), "under four");
         assert!(read_batch(&[40, 0, 0, 0, 0, 0]).is_err(), "past the batch");
         assert!(read_batch(&[0, 0]).is_err(), "no length at all");
+        let mut unpaired = encode_batch("");
+        unpaired.extend_from_slice(&[0x00, 0xd8]);
+        assert!(read_batch(&unpaired).is_err(), "SQL that is not UTF-16");
     }
 }
