@@ -6,16 +6,16 @@
 //! this crate serves.
 
 use codec::sql::Delimiter;
-use transport::sql;
+use transport::sql::{self, Literal};
 
 use crate::binary::from_hex_literal;
 
 /// `INSERT INTO <table> (<column>) VALUES (<literal>)` taken apart: the
-/// table, the column and the literal's bytes — a string literal's text,
-/// with or without its `N`, quotes undoubled; a `0x` literal's bytes.
-/// Identifiers may be bracketed; anything else is `None`.
+/// table, the column and the literal — a string literal's text, with or
+/// without its `N`, quotes undoubled; a `0x` literal's bytes. Identifiers
+/// may be bracketed; anything else is `None`.
 #[must_use]
-pub fn parse_insert(statement: &str) -> Option<(String, String, Vec<u8>)> {
+pub fn parse_insert(statement: &str) -> Option<(String, String, Literal)> {
     sql::parse_insert(statement, identifier, literal)
 }
 
@@ -32,42 +32,51 @@ fn identifier(rest: &str) -> Option<(String, &str)> {
     (end > 0).then(|| (rest[..end].to_string(), &rest[end..]))
 }
 
-/// One literal — `N'…'`, `'…'` or `0x…` — as bytes, and what follows it.
-fn literal(rest: &str) -> Option<(Vec<u8>, &str)> {
+/// One literal — `N'…'`, `'…'` or `0x…` — and what follows it.
+fn literal(rest: &str) -> Option<(Literal, &str)> {
     let rest = rest.trim_start();
     if rest.starts_with("0x") || rest.starts_with("0X") {
         let digits = &rest[2..];
         let end = digits
             .find(|c: char| !c.is_ascii_hexdigit())
             .unwrap_or(digits.len());
-        return Some((from_hex_literal(&rest[..2 + end])?, &digits[end..]));
+        let bytes = from_hex_literal(&rest[..2 + end])?;
+        return Some((Literal::Bytes(bytes), &digits[end..]));
     }
     let quoted = rest.strip_prefix('N').unwrap_or(rest);
     let (value, after) = Delimiter::STRING.unquote_prefix(quoted).ok()?;
-    Some((value.into_bytes(), after))
+    Some((Literal::Text(value), after))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn text(value: &str) -> Literal {
+        Literal::Text(value.into())
+    }
+
     #[test]
     fn an_insert_of_one_column_is_taken_apart() {
         assert_eq!(
             parse_insert("INSERT INTO inbox (payload) VALUES (N'it''s here');"),
-            Some(("inbox".into(), "payload".into(), b"it's here".to_vec()))
+            Some(("inbox".into(), "payload".into(), text("it's here")))
         );
         assert_eq!(
             parse_insert("insert into [In ]]box] ( [Payload] ) values ( '' )"),
-            Some(("In ]box".into(), "Payload".into(), Vec::new()))
+            Some(("In ]box".into(), "Payload".into(), text("")))
         );
         assert_eq!(
             parse_insert("INSERT INTO dbo.inbox (payload) VALUES (0xFFfe)"),
-            Some(("dbo.inbox".into(), "payload".into(), vec![0xff, 0xfe]))
+            Some((
+                "dbo.inbox".into(),
+                "payload".into(),
+                Literal::Bytes(vec![0xff, 0xfe])
+            ))
         );
         assert_eq!(
             parse_insert("INSERT INTO inbox (payload) VALUES (0x)"),
-            Some(("inbox".into(), "payload".into(), Vec::new()))
+            Some(("inbox".into(), "payload".into(), Literal::Bytes(Vec::new())))
         );
         assert!(parse_insert("INSERT INTO inbox (a, b) VALUES ('x', 'y')").is_none());
         assert!(parse_insert("INSERT INTO inbox (a) VALUES ('open").is_none());

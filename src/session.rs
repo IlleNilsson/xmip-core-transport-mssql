@@ -76,6 +76,7 @@ pub struct Session {
     columns: Vec<String>,
     rows: Rows<String>,
     answering: Option<Answering<Answer>>,
+    column: sql::Column,
 }
 
 impl Session {
@@ -102,6 +103,7 @@ impl Session {
             columns: Vec::new(),
             rows: Vec::new(),
             answering: None,
+            column: sql::Column::Binary,
         };
         read_prelogin(&session.read(PRELOGIN)?)?;
         let answer = Prelogin {
@@ -163,6 +165,14 @@ impl Session {
     #[must_use]
     pub const fn login(&self) -> &Login7 {
         &self.login
+    }
+
+    /// What the column an INSERT names holds: bytes unless declared
+    /// otherwise.
+    #[must_use]
+    pub const fn holding(mut self, column: sql::Column) -> Self {
+        self.column = column;
+        self
     }
 
     /// Answer any SELECT with these `columns` and `rows`, every column
@@ -239,12 +249,12 @@ impl Session {
                 Event::Selected(sql.to_string()),
             ),
             "INSERT" => match parse_insert(sql) {
-                Some((table, column, bytes)) => {
+                Some((table, column, value)) => {
                     let origin =
                         format!("mssql://{}/{}/{table}/{column}", self.peer, self.database());
                     (
                         Answer::Complete(1),
-                        Event::Inserted(Arrived::new(origin, bytes)),
+                        Event::Inserted(Arrived::new(origin, self.column.stored(value))),
                     )
                 }
                 None => (

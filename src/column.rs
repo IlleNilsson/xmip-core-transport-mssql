@@ -9,9 +9,10 @@
 //! operator casts it in the query.
 
 use codec::cursor::Cursor;
+use codec::unicode::Form;
 use transport::error::{Result, protocol_error};
 
-use crate::binary::{column_bytes, hex_literal};
+use crate::binary::{from_hex_literal, hex_literal};
 
 /// A nullable integer of one, two, four or eight bytes.
 pub const INTN: u8 = 0x26;
@@ -159,7 +160,10 @@ pub fn write_value(out: &mut Vec<u8>, kind: ColumnType, value: Option<&str>) {
         }
         ColumnType::VarChar(max) => write_bytes(out, max, value.map(str::as_bytes)),
         ColumnType::VarBinary(max) => {
-            let bytes = value.map(|text| column_bytes(text.to_string()));
+            // A cell in the `0x` form is its bytes; other text converts to
+            // its UTF-8 bytes, as `CONVERT(varbinary, …)` converts it.
+            let bytes = value
+                .map(|text| from_hex_literal(text).unwrap_or_else(|| text.as_bytes().to_vec()));
             write_bytes(out, max, bytes.as_deref());
         }
     }
@@ -168,7 +172,9 @@ pub fn write_value(out: &mut Vec<u8>, kind: ColumnType, value: Option<&str>) {
 /// One cell of `kind` as text, or `None` where it is null.
 ///
 /// # Errors
-/// A width the type does not have, or a value that breaks off.
+/// A width the type does not have, a value that breaks off, or text that
+/// is not its encoding — UTF-16 for NVARCHAR, UTF-8 for VARCHAR — which is
+/// refused, never repaired.
 pub fn read_value(cursor: &mut Cursor<'_>, kind: ColumnType) -> Result<Option<String>> {
     Ok(match kind {
         ColumnType::IntN(_) => {
@@ -198,12 +204,12 @@ pub fn read_value(cursor: &mut Cursor<'_>, kind: ColumnType) -> Result<Option<St
             0 => None,
             _ => Some(u8::from(cursor.byte()? != 0).to_string()),
         },
-        ColumnType::NVarChar(max) => {
-            read_bytes(cursor, max)?.map(|b| codec::utf16::decode_lossy(&b))
-        }
-        ColumnType::VarChar(max) => {
-            read_bytes(cursor, max)?.map(|b| String::from_utf8_lossy(&b).into_owned())
-        }
+        ColumnType::NVarChar(max) => read_bytes(cursor, max)?
+            .map(|b| codec::utf16::decode(&b))
+            .transpose()?,
+        ColumnType::VarChar(max) => read_bytes(cursor, max)?
+            .map(|b| Form::Utf8.decode(&b))
+            .transpose()?,
         ColumnType::VarBinary(max) => read_bytes(cursor, max)?.map(|b| hex_literal(&b)),
     })
 }

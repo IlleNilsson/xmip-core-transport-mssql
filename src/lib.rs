@@ -9,9 +9,14 @@
 //! producer inserts, an integrator polls. A Receive Location runs its
 //! query — `SELECT id, payload FROM inbox ORDER BY id` unless told
 //! otherwise — and hands each row up; a Send Location inserts the Stream
-//! as one column of one row — as an `N'…'` literal when the Stream is
-//! UTF-8 without a NUL, as a `0x…` binary literal otherwise, and a value
-//! in that form is the bytes again on the way back (`binary.rs`). What is
+//! as one column of one row. What the column holds is the Location's to
+//! declare, never the bytes' (ADR-0038): `column = "binary"`, the default,
+//! inserts every Stream as a `0x…` binary literal and reads a value back
+//! from that form (`binary.rs`); `column = "text"` decodes the Stream
+//! strictly in its `encoding` — `utf-8` unless another Unicode form is
+//! named — inserts it as an `N'…'` literal, and encodes a value read back
+//! to that form. A Stream that is not its declared form is refused, never
+//! repaired; so is a row value that is not its column's encoding. What is
 //! spoken is Tabular Data Stream 7.4 on port 1433: pre-login, LOGIN7 with
 //! SQL Server authentication, a SQL batch, the token stream back. Windows
 //! and federated authentication are not implemented; a server that
@@ -48,12 +53,15 @@ use std::time::Duration;
 pub use client::{Client, QueryResult, quote_identifier, quote_literal};
 pub use login::Login;
 pub use session::{Answer, Event, Session};
+use transport::Configured;
 use transport::claim::{NoNativeClaim, ResourceClaim};
 use transport::error::{Result, TransportError, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
+use transport::sql::{COLUMN, Column, ENCODING};
 use transport::{Arrived, Directions, Transport};
+use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
 
 /// What a Receive Location runs unless told otherwise.
 pub const DEFAULT_QUERY: &str = "SELECT id, payload FROM inbox ORDER BY id";
@@ -72,6 +80,7 @@ pub struct MssqlTransport {
     user: String,
     password: Option<String>,
     query: String,
+    column: Column,
     timeout: Option<Duration>,
 }
 
@@ -89,6 +98,7 @@ impl MssqlTransport {
             user: user.into(),
             password: None,
             query: DEFAULT_QUERY.to_string(),
+            column: Column::Binary,
             timeout: None,
         }
     }
@@ -105,6 +115,13 @@ impl MssqlTransport {
     #[must_use]
     pub fn with_query(mut self, query: impl Into<String>) -> Self {
         self.query = query.into();
+        self
+    }
+
+    /// What the payload column holds: bytes unless declared otherwise.
+    #[must_use]
+    pub const fn holding(mut self, column: Column) -> Self {
+        self.column = column;
         self
     }
 
@@ -149,6 +166,7 @@ impl MssqlTransport {
     pub fn accept_one(&self, listener: &TcpListener) -> Result<Session> {
         let expected = self.password.as_ref().map(|_| self.login());
         Session::accept(listener, expected.as_ref(), self.timeout)
+            .map(|session| session.holding(self.column))
     }
 
     /// Where a target names the server, database, table and column, or
@@ -169,6 +187,59 @@ impl MssqlTransport {
                 "{target:?} is not database/table/column or table/column"
             ))),
         }
+    }
+}
+
+impl Configured for MssqlTransport {
+    /// The address is the server, `host:1433`, both sides log in to.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "database",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The database logged in to, and a send target's when it names none.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "user",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The SQL Server login, its password the credentials'.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "query",
+                kind: Kind::Text,
+                presence: Presence::Default(Fixed::Text(DEFAULT_QUERY)),
+                meaning: "The query a receive runs: first column a row's name, last its Stream.",
+                applies: Applies::Receive,
+            },
+            COLUMN,
+            ENCODING,
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long a server that stops mid-message is waited on.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    /// The password is not a setting: it comes through the Location's
+    /// `credentials`, never its table.
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        let mut transport = Self::new(address, settings.text("database"), settings.text("user"));
+        if let Some(query) = settings.optional_text("query") {
+            transport = transport.with_query(query);
+        }
+        let transport = transport.holding(Column::configured(settings)?);
+        Ok(match settings.optional_duration("timeout") {
+            Some(timeout) => transport.timing_out_after(timeout),
+            None => transport,
+        })
     }
 }
 
@@ -193,23 +264,25 @@ impl Transport for MssqlTransport {
                 .cloned()
                 .flatten()
                 .unwrap_or_else(|| index.to_string());
-            let value = row.last().cloned().flatten().unwrap_or_default();
+            let bytes = match row.last().cloned().flatten() {
+                Some(value) => self.column.bytes(&value, binary::from_hex_literal)?,
+                None => Vec::new(),
+            };
             arrived.push(Arrived::new(
                 format!("mssql://{}/{}?row={name}", self.server, self.database),
-                binary::column_bytes(value),
+                bytes,
             ));
         }
         Ok(arrived)
     }
 
-    /// Insert the bytes as one column of one row: text as text, anything
-    /// else as a binary literal.
+    /// Insert the bytes as one column of one row: as a binary literal, or
+    /// as text where the column is declared to hold it.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
         let (server, database, table, column) = self.resolve(target)?;
-        let literal = match std::str::from_utf8(bytes) {
-            Ok(text) if transport::sql::is_text(bytes) => quote_literal(text),
-            _ => binary::hex_literal(bytes),
-        };
+        let literal = self
+            .column
+            .literal(bytes, quote_literal, binary::hex_literal)?;
         let mut client = self.connect_to(server, database)?;
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
@@ -256,9 +329,9 @@ impl Loopback for MssqlTransport {
         Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
     }
 
-    /// INSERT the payload as one column of one row — text as an `N'…'`
-    /// literal, anything else as `0x…` — from a fresh near end logging in
-    /// to `address` as this transport does.
+    /// INSERT the payload as one column of one row, as the column is
+    /// declared to hold it, from a fresh near end logging in to `address`
+    /// as this transport does.
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
         let near = Self {
             server: address.to_string(),
@@ -271,10 +344,41 @@ impl Loopback for MssqlTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codec::unicode::Form;
     use transport::payload::edge_payloads;
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
+    }
+
+    #[test]
+    fn mssql_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert!(MssqlTransport::SETTINGS.problems().is_empty());
+        let given = [
+            ("database".to_string(), Given::Text("orders".to_string())),
+            ("user".to_string(), Given::Text("integration".to_string())),
+            ("timeout".to_string(), Given::Text("30s".to_string())),
+        ];
+        let built = MssqlTransport::open("sql:1433", Applies::Receive, &given).expect("built");
+        assert_eq!(built.server, "sql:1433");
+        assert_eq!(
+            (built.database.as_str(), built.user.as_str()),
+            ("orders", "integration")
+        );
+        assert_eq!(built.query, DEFAULT_QUERY);
+        assert_eq!(built.timeout, Some(Duration::from_secs(30)));
+        assert!(built.password.is_none(), "the password is the credentials'");
+        assert_eq!(built.column, Column::Binary, "bytes unless declared");
+        let mut texts = given.to_vec();
+        texts.push(("column".to_string(), Given::Text("text".to_string())));
+        texts.push(("encoding".to_string(), Given::Text("utf-32be".to_string())));
+        let built = MssqlTransport::open("sql:1433", Applies::Send, &texts).expect("text");
+        assert_eq!(built.column, Column::Text(Form::Utf32Be));
+        let Err(refused) = MssqlTransport::open("sql:1433", Applies::Send, &given[1..]) else {
+            panic!("database is required");
+        };
+        assert!(refused.message.contains("\"database\""), "{refused}");
     }
 
     #[test]
@@ -283,21 +387,20 @@ mod tests {
             MssqlTransport::new("127.0.0.1:0", "orders", "xmip").timing_out_after(secs(2));
         let (listener, address) = far_end.bind().expect("binding");
         let receiver = std::thread::spawn(move || {
-            MssqlTransport::new(address, "orders", "xmip")
+            let near = MssqlTransport::new(address, "orders", "xmip")
                 .with_query("SELECT id, kind, payload FROM inbox ORDER BY id")
-                .timing_out_after(secs(2))
-                .receive()
+                .timing_out_after(secs(2));
+            let bytes = near.receive();
+            (bytes, near.holding(Column::Text(Form::Utf16Le)).receive())
         });
+        let rows: [&[Option<&str>]; 2] = [
+            &[Some("41"), Some("order"), Some("0x4953412a30302a")],
+            &[None, Some("raw"), Some("0xfffe")],
+        ];
         let mut session = far_end
             .accept_one(&listener)
             .expect("accepting")
-            .with_table(
-                &["id", "kind", "payload"],
-                &[
-                    &[Some("41"), Some("order"), Some("ISA*00*")],
-                    &[None, Some("raw"), Some("0xfffe")],
-                ],
-            );
+            .with_table(&["id", "kind", "payload"], &rows);
         assert_eq!(session.user(), "xmip");
         assert_eq!(session.database(), "orders");
         assert_eq!(session.login().hostname, "xmip");
@@ -307,7 +410,19 @@ mod tests {
             Event::Selected("SELECT id, kind, payload FROM inbox ORDER BY id".into())
         );
         assert!(session.next_event().expect("closed").is_none());
-        let arrived = receiver.join().expect("thread").expect("receiving");
+        let mut session = far_end
+            .accept_one(&listener)
+            .expect("the text column")
+            .with_table(&["id", "payload"], &[&[Some("43"), Some("0x41")]]);
+        while session.next_event().expect("event").is_some() {}
+        let (arrived, text) = receiver.join().expect("thread");
+        let text = text.expect("a text column");
+        assert_eq!(
+            text[0].bytes,
+            codec::utf16::encode("0x41"),
+            "text, in its form"
+        );
+        let arrived = arrived.expect("receiving");
         assert_eq!(arrived.len(), 2);
         assert_eq!(arrived[0].bytes, b"ISA*00*");
         assert!(arrived[0].origin_uri.ends_with("/orders?row=41"));
@@ -359,7 +474,7 @@ mod tests {
         assert_eq!(
             binary.bytes,
             [0xff, 0xfe],
-            "not text, so the binary literal"
+            "a binary column, so the binary literal"
         );
         let error = far_end.accept_one(&listener).err().expect("wrong password");
         assert!(error.message.contains("Login failed"));
@@ -371,6 +486,17 @@ mod tests {
         assert!(far_end.claims().is_some(), "rows are artefacts");
         assert_eq!(far_end.name(), "mssql");
         assert_eq!(far_end.directions(), Directions::BOTH);
+    }
+
+    #[test]
+    fn a_text_column_refuses_a_stream_that_is_not_its_encoding() {
+        let near =
+            MssqlTransport::new("127.0.0.1:1", "orders", "xmip").holding(Column::Text(Form::Utf8));
+        let refused = near
+            .send("inbox/payload", &[0xff, 0xfe])
+            .expect_err("not UTF-8");
+        assert!(!refused.retryable);
+        assert!(refused.message.contains("utf-8 text"), "{refused}");
     }
 
     #[test]
