@@ -28,9 +28,9 @@ use crate::wire::{DEFAULT_PACKET_SIZE, LOGIN7, PRELOGIN, SQL_BATCH, TABULAR_RESU
 use crate::wire::{read_message, write_message};
 
 /// The number SQL Server answers a refused login with.
-pub const LOGIN_FAILED: i32 = 18456;
+const LOGIN_FAILED: i32 = 18456;
 /// The number it answers a syntax error with.
-pub const SYNTAX_ERROR: i32 = 102;
+const SYNTAX_ERROR: i32 = 102;
 
 /// What the client did, as [`Session::next_event`] reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
