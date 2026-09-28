@@ -15,21 +15,21 @@ use transport::error::{Result, protocol_error};
 use crate::binary::{from_hex_literal, hex_literal};
 
 /// A nullable integer of one, two, four or eight bytes.
-pub const INTN: u8 = 0x26;
+const INTN: u8 = 0x26;
 /// A four-byte integer, never null.
-pub const INT4: u8 = 0x38;
+const INT4: u8 = 0x38;
 /// An eight-byte integer, never null.
-pub const INT8: u8 = 0x7F;
+const INT8: u8 = 0x7F;
 /// One bit, never null.
 pub const BIT: u8 = 0x32;
 /// One bit, or null.
-pub const BITN: u8 = 0x68;
+const BITN: u8 = 0x68;
 /// UCS-2 text with a collation.
 pub const NVARCHAR: u8 = 0xE7;
 /// Single-byte text with a collation, read as UTF-8 regardless.
-pub const BIGVARCHAR: u8 = 0xA7;
+const BIGVARCHAR: u8 = 0xA7;
 /// Bytes.
-pub const BIGVARBINARY: u8 = 0xA5;
+const BIGVARBINARY: u8 = 0xA5;
 /// The length a `(MAX)` column declares, and a null short value carries.
 pub const MAX: u16 = 0xFFFF;
 /// A partially-length-prefixed null.
@@ -243,7 +243,7 @@ fn read_bytes(cursor: &mut Cursor<'_>, max: u16) -> Result<Option<Vec<u8>>> {
 
 /// `bytes` partially length-prefixed: the total, then chunks each behind
 /// a u32 length, then a zero.
-pub fn write_plp(out: &mut Vec<u8>, bytes: Option<&[u8]>) {
+fn write_plp(out: &mut Vec<u8>, bytes: Option<&[u8]>) {
     let Some(bytes) = bytes else {
         return out.extend_from_slice(&PLP_NULL.to_le_bytes());
     };
@@ -259,7 +259,7 @@ pub fn write_plp(out: &mut Vec<u8>, bytes: Option<&[u8]>) {
 ///
 /// # Errors
 /// Chunks that do not add up to the total, or that break off.
-pub fn read_plp(cursor: &mut Cursor<'_>) -> Result<Option<Vec<u8>>> {
+fn read_plp(cursor: &mut Cursor<'_>) -> Result<Option<Vec<u8>>> {
     let total = cursor.u64_le()?;
     if total == PLP_NULL {
         return Ok(None);

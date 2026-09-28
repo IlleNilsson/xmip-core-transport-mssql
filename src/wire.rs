@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
 use net::MAX_BODY;
-use transport::ceiling;
+use net::ceiling;
 use transport::error::{Result, classify, protocol_error};
 
 /// A SQL batch, from the client.
@@ -27,7 +27,7 @@ pub const PRELOGIN: u8 = 0x12;
 /// The status bit on the last packet of a message.
 pub const END_OF_MESSAGE: u8 = 0x01;
 /// The header ahead of every packet.
-pub const HEADER_LENGTH: usize = 8;
+const HEADER_LENGTH: usize = 8;
 /// The packet size until the server negotiates another.
 pub const DEFAULT_PACKET_SIZE: u16 = 4096;
 /// The smallest packet the protocol allows, header included.
@@ -92,7 +92,7 @@ pub fn write_message(
 /// and the rest of the table: RPC, attention, bulk load, federated
 /// authentication, transaction manager, TLS.
 #[must_use]
-pub const fn is_packet_type(kind: u8) -> bool {
+const fn is_packet_type(kind: u8) -> bool {
     matches!(
         kind,
         0x01 | 0x02 | 0x03 | 0x04 | 0x06 | 0x07 | 0x08 | 0x0E | 0x10 | 0x11 | 0x12

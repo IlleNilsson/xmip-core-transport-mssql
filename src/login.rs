@@ -55,13 +55,13 @@ impl Login7 {
 
 /// `password` as the wire carries it: nibbles swapped, then XOR 0xA5.
 #[must_use]
-pub fn obscure(password: &[u8]) -> Vec<u8> {
+fn obscure(password: &[u8]) -> Vec<u8> {
     password.iter().map(|b| b.rotate_left(4) ^ 0xA5).collect()
 }
 
 /// The password an obscured one was.
 #[must_use]
-pub fn reveal(obscured: &[u8]) -> Vec<u8> {
+fn reveal(obscured: &[u8]) -> Vec<u8> {
     obscured.iter().map(|b| (b ^ 0xA5).rotate_left(4)).collect()
 }
 

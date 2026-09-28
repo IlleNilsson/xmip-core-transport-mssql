@@ -82,8 +82,8 @@ pub struct MssqlTransport {
     query: String,
     column: Column,
     timeout: Option<Duration>,
-    /// The connections a send inserts on, logged in once per server and
-    /// database and kept.
+    /// The connections a send inserts on and a receive queries on, logged
+    /// in once per server and database and kept.
     connections: Pool<Client>,
 }
 
@@ -236,11 +236,14 @@ impl Transport for MssqlTransport {
         Directions::BOTH
     }
 
-    /// Run the query; each row is a Stream.
+    /// Run the query on the connection kept for the server and database,
+    /// logged in on the first receive; each row is a Stream.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let mut client = self.connect()?;
-        let result = client.query(&self.query)?;
-        client.close()?;
+        let result = self.connections.exchange(
+            &format!("{}/{}", self.server, self.database),
+            || self.connect(),
+            |client| client.query(&self.query),
+        )?;
         let mut arrived = Vec::with_capacity(result.rows.len());
         for (index, row) in result.rows.into_iter().enumerate() {
             let name = row
@@ -367,11 +370,14 @@ mod tests {
             MssqlTransport::new("127.0.0.1:0", "orders", "xmip").timing_out_after(secs(2));
         let (listener, address) = far_end.bind().expect("binding");
         let receiver = std::thread::spawn(move || {
-            let near = MssqlTransport::new(address, "orders", "xmip")
-                .with_query("SELECT id, kind, payload FROM inbox ORDER BY id")
-                .timing_out_after(secs(2));
-            let bytes = near.receive();
-            (bytes, near.holding(Column::Text(Form::Utf16Le)).receive())
+            // Two transports, so two sessions: each keeps its own.
+            let near = || {
+                MssqlTransport::new(address.clone(), "orders", "xmip")
+                    .with_query("SELECT id, kind, payload FROM inbox ORDER BY id")
+                    .timing_out_after(secs(2))
+            };
+            let bytes = near().receive();
+            (bytes, near().holding(Column::Text(Form::Utf16Le)).receive())
         });
         let rows: [&[Option<&str>]; 2] = [
             &[Some("41"), Some("order"), Some("0x4953412a30302a")],
@@ -498,6 +504,46 @@ mod tests {
         let last = again.next_insert().expect("insert").expect("one");
         assert_eq!(last.bytes, b"after the close");
         sender.join().expect("thread").expect("sending");
+        assert_eq!(near.connections.opened(), 2);
+    }
+
+    #[test]
+    fn a_thousand_receives_log_in_once_and_a_connection_the_server_closed_is_replaced() {
+        const RECEIVES: usize = 1000;
+        let far_end = MssqlTransport::new("127.0.0.1:0", "orders", "xmip")
+            .with_password("secret")
+            .timing_out_after(secs(5));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = MssqlTransport::new(address, "orders", "xmip")
+            .with_password("secret")
+            .timing_out_after(secs(5));
+        let receiving = near.clone();
+        let receiver = std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            for _ in 0..RECEIVES {
+                assert_eq!(receiving.receive()?.len(), 1);
+            }
+            let took = began.elapsed();
+            // Generous for a debug build under load: a millisecond a query.
+            assert!(took < Duration::from_millis(RECEIVES as u64), "{took:?}");
+            receiving.receive()
+        });
+        let accept = || {
+            far_end
+                .accept_one(&listener)
+                .expect("a login")
+                .with_table(&["id", "payload"], &[&[Some("1"), None]])
+        };
+        // One login for every query: one session accepted.
+        let mut session = accept();
+        for _ in 0..RECEIVES {
+            let event = session.next_event().expect("query");
+            assert!(matches!(event, Some(Event::Selected(_))), "{event:?}");
+        }
+        drop(session);
+        let mut again = accept();
+        assert!(matches!(again.next_event(), Ok(Some(Event::Selected(_)))));
+        assert_eq!(receiver.join().expect("thread").expect("after").len(), 1);
         assert_eq!(near.connections.opened(), 2);
     }
 

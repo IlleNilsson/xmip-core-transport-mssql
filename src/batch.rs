@@ -10,7 +10,7 @@ use codec::cursor::Cursor;
 use transport::error::{Result, protocol_error};
 
 /// The transaction-descriptor header, the one every batch carries.
-pub const TRANSACTION_HEADER: u16 = 0x0002;
+const TRANSACTION_HEADER: u16 = 0x0002;
 /// `ALL_HEADERS` as this crate writes it: the total, then one header of
 /// eighteen bytes.
 const HEADERS_LENGTH: u32 = 22;

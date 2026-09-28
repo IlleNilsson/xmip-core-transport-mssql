@@ -14,20 +14,18 @@ use transport::error::{Result, protocol_error};
 /// The sender's version: four bytes of version, two of sub-build.
 pub const VERSION: u8 = 0x00;
 /// One byte: one of the `ENCRYPT_*` answers.
-pub const ENCRYPTION: u8 = 0x01;
+const ENCRYPTION: u8 = 0x01;
 /// The instance name, NUL-terminated.
-pub const INSTOPT: u8 = 0x02;
+const INSTOPT: u8 = 0x02;
 /// The client's thread, four bytes; the server answers with none.
-pub const THREADID: u8 = 0x03;
+const THREADID: u8 = 0x03;
 /// One byte: multiple active result sets, on or off.
-pub const MARS: u8 = 0x04;
+const MARS: u8 = 0x04;
 /// The end of the option table.
 pub const TERMINATOR: u8 = 0xFF;
 
 /// Encrypt the login only.
 pub const ENCRYPT_OFF: u8 = 0x00;
-/// Encrypt everything.
-pub const ENCRYPT_ON: u8 = 0x01;
 /// Encryption is not available on this side.
 pub const ENCRYPT_NOT_SUP: u8 = 0x02;
 /// Encryption is required by this side.

@@ -14,42 +14,41 @@ use crate::column::{Column, read_type_info, read_value, write_type_info, write_v
 use crate::wire::{Tds, TdsWrite};
 
 /// The environment changed: a database, a language, a packet size.
-pub const ENVCHANGE: u8 = 0xE3;
+const ENVCHANGE: u8 = 0xE3;
 /// The server failed the batch, or the login.
 pub const ERROR: u8 = 0xAA;
 /// The server has something to say that is not a failure.
 pub const INFO: u8 = 0xAB;
 /// The login was accepted.
-pub const LOGINACK: u8 = 0xAD;
+const LOGINACK: u8 = 0xAD;
 /// The columns of the rows to come.
-pub const COLMETADATA: u8 = 0x81;
+const COLMETADATA: u8 = 0x81;
 /// One row, every column present.
 pub const ROW: u8 = 0xD1;
 /// One row behind a null bitmap, the null columns absent.
-pub const NBCROW: u8 = 0xD2;
+const NBCROW: u8 = 0xD2;
 /// A statement is done.
 pub const DONE: u8 = 0xFD;
 /// A procedure is done.
-pub const DONEPROC: u8 = 0xFE;
+const DONEPROC: u8 = 0xFE;
 /// A statement inside a procedure is done.
-pub const DONEINPROC: u8 = 0xFF;
+const DONEINPROC: u8 = 0xFF;
 /// A procedure's return value.
-pub const RETURNSTATUS: u8 = 0x79;
+const RETURNSTATUS: u8 = 0x79;
 /// The columns an `ORDER BY` sorted on.
 pub const ORDER: u8 = 0xA9;
 
 /// More results follow this DONE.
-pub const DONE_MORE: u16 = 0x0001;
+#[cfg(test)]
+const DONE_MORE: u16 = 0x0001;
 /// The statement failed.
 pub const DONE_ERROR: u16 = 0x0002;
 /// The row count is meaningful.
 pub const DONE_COUNT: u16 = 0x0010;
 /// The count COLMETADATA carries when there are no columns.
-pub const NO_COLUMNS: u16 = 0xFFFF;
+const NO_COLUMNS: u16 = 0xFFFF;
 /// ENVCHANGE: the database.
 pub const ENV_DATABASE: u8 = 1;
-/// ENVCHANGE: the language.
-pub const ENV_LANGUAGE: u8 = 2;
 /// ENVCHANGE: the packet size.
 pub const ENV_PACKET_SIZE: u8 = 4;
 
