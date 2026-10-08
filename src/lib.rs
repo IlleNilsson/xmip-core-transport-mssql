@@ -67,6 +67,7 @@ use std::time::Duration;
 pub use client::{Client, QueryResult, quote_literal};
 use insert::DIALECT;
 pub use session::{Answer, Event, Session};
+use transport::ArrivalIdentity;
 use transport::Configured;
 use transport::claim::{NoNativeClaim, ResourceClaim};
 use transport::error::{Result, protocol_error};
@@ -350,6 +351,12 @@ impl Accepting for MssqlTransport {
 }
 
 impl Loopback for MssqlTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::Unnamed(
+            "a row names no sender: the database it was read from is in its origin",
+        )
+    }
+
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
     }
