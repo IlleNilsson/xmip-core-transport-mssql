@@ -12,7 +12,7 @@
 //! as one column of one row. What the column holds is the Location's to
 //! declare, never the bytes' (ADR-0038): `column = "binary"`, the default,
 //! inserts every Stream as a `0x…` binary literal and reads a value back
-//! from that form (`binary.rs`); `column = "text"` decodes the Stream
+//! from that form (T-SQL's, `xmip-core-library-sql`); `column = "text"` decodes the Stream
 //! strictly in its `encoding` — `utf-8` unless another Unicode form is
 //! named — inserts it as an `N'…'` literal, and encodes a value read back
 //! to that form. A Stream that is not its declared form is refused, never
@@ -34,8 +34,8 @@
 //! **A row is consumed by the `accept` statement, after its cycle.** The query
 //! only reads. Where the Location declares `accept` — `DELETE FROM inbox WHERE
 //! id = @P1` — it runs once a row's cycle accepted it, the row's name bound in
-//! place of `@P1` (`transport::sql::accept`), written as a string literal by
-//! `quote_literal` (`N'…'`). A refused row is left where it lies, and not
+//! place of `@P1` (`transport::sql::accept`), written as T-SQL's string
+//! literal (`N'…'`). A refused row is left where it lies, and not
 //! received again while its body is unchanged. A row whose cycle failed is
 //! left, and the next receive reads it again; so is a row whose name is NULL,
 //! which no statement can name. Where `accept` is left out a row's verdict
@@ -50,10 +50,8 @@
 //! configured server and database.
 
 pub mod batch;
-pub mod binary;
 pub mod client;
 pub mod column;
-pub mod insert;
 pub mod login;
 pub mod prelogin;
 pub mod session;
@@ -64,9 +62,9 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use client::{Client, QueryResult, quote_literal};
-use insert::DIALECT;
+pub use client::{Client, QueryResult};
 pub use session::{Answer, Event, Session};
+use sql::TSQL;
 use transport::ArrivalIdentity;
 use transport::Configured;
 use transport::claim::{NoNativeClaim, ResourceClaim};
@@ -74,9 +72,12 @@ use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::sql::{COLUMN, Column, ENCODING, accept};
+use transport::sql::{COLUMN, Column, ENCODING, accept, destination};
 use transport::{Arrived, Directions, Login, Pool, Taken, Transport};
 use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
+
+/// The schemes a send target may open with.
+const SCHEMES: &[&str] = &["mssql", "sqlserver"];
 
 /// What a Receive Location runs unless told otherwise.
 pub const DEFAULT_QUERY: &str = "SELECT id, payload FROM inbox ORDER BY id";
@@ -275,6 +276,10 @@ impl Transport for MssqlTransport {
         transport::Arrivals::Ordered("a poll reads again what is not yet told")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Polled("a receive runs the query and returns")
+    }
+
     /// Run the query on the connection kept for the server and database, logged in
     /// on the first receive; each row is a Stream, whole. Its verdict runs the
     /// `accept` statement where one is declared — on `Accepted`, never on `Refused`
@@ -293,10 +298,10 @@ impl Transport for MssqlTransport {
             &self.refused,
             |name| format!("mssql://{}/{}?row={name}", self.server, self.database),
             Clone::clone,
-            |value| self.column.bytes(&value, binary::from_hex_literal),
+            |value| self.column.bytes(&value, &TSQL),
             |name| {
                 let transport = Arc::clone(&shared);
-                DIALECT.accepting(self.accept.as_deref(), name, quote_literal, move |sql| {
+                accept::accepting(&TSQL, self.accept.as_deref(), name, move |sql| {
                     transport.connections.exchange(
                         &format!("{}/{}", transport.server, transport.database),
                         || transport.connect(),
@@ -312,14 +317,12 @@ impl Transport for MssqlTransport {
     /// kept for the server and database, logged in on the first send to
     /// them.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
-        let to = DIALECT.destination(target, &self.server, &self.database)?;
-        let literal = self
-            .column
-            .literal(bytes, quote_literal, binary::hex_literal)?;
-        let insert = DIALECT.insert(to.table, to.column, &literal);
+        let to = destination(SCHEMES, target, &self.server, &self.database)?;
+        let literal = self.column.literal(bytes, &TSQL)?;
+        let insert = TSQL.insert(to.table, to.column, &literal);
         self.connections.exchange(
-            &format!("{}/{}", to.server, to.catalog),
-            || self.connect_to(to.server, to.catalog),
+            &format!("{}/{}", to.server, to.database),
+            || self.connect_to(to.server, to.database),
             |client| client.execute(&insert).map(|_| ()),
         )
     }
