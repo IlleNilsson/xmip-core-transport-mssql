@@ -12,13 +12,13 @@ use std::io::BufReader;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
+use sql::{TSQL, Verb};
 use transport::error::{Result, TransportError, protocol_error};
-use transport::sql::{self, Answering, Inserted, Rows};
+use transport::sql::{Answering, Column as Held, Inserted, Rows, next_insert, table};
 use transport::{Login, Taken, socket};
 
 use crate::batch::read_batch;
 use crate::column::Column;
-use crate::insert::parse_insert;
 use crate::login::{Login7, TDS_7_4, read_login7};
 use crate::prelogin::{Prelogin, encode_prelogin, read_prelogin};
 use crate::token::{
@@ -75,7 +75,7 @@ pub struct Session {
     columns: Vec<String>,
     rows: Rows<String>,
     answering: Option<Answering<Answer>>,
-    column: sql::Column,
+    column: Held,
 }
 
 impl Session {
@@ -102,7 +102,7 @@ impl Session {
             columns: Vec::new(),
             rows: Vec::new(),
             answering: None,
-            column: sql::Column::Binary,
+            column: Held::Binary,
         };
         read_prelogin(&session.read(PRELOGIN)?)?;
         let answer = Prelogin {
@@ -177,7 +177,7 @@ impl Session {
     /// What the column an INSERT names holds: bytes unless declared
     /// otherwise.
     #[must_use]
-    pub const fn holding(mut self, column: sql::Column) -> Self {
+    pub const fn holding(mut self, column: Held) -> Self {
         self.column = column;
         self
     }
@@ -186,7 +186,7 @@ impl Session {
     /// `NVARCHAR(MAX)`.
     #[must_use]
     pub fn with_table(mut self, columns: &[&str], rows: &[&[Option<&str>]]) -> Self {
-        (self.columns, self.rows) = sql::table(columns, rows);
+        (self.columns, self.rows) = table(columns, rows);
         self
     }
 
@@ -207,7 +207,7 @@ impl Session {
     /// # Errors
     /// Where the connection broke, or nothing arrived before the timeout.
     pub fn next_insert(&mut self) -> Result<Option<Taken>> {
-        sql::next_insert(|| self.next_event())
+        next_insert(|| self.next_event())
     }
 
     /// The next batch the client ran, answered, or `None` when it closed.
@@ -246,16 +246,15 @@ impl Session {
         if let Some(answer) = self.answering.as_mut().and_then(|f| f(sql)) {
             return (answer, Event::Executed(sql.to_string()));
         }
-        let verb = sql::verb(sql);
-        match verb.as_str() {
-            "SELECT" => (
+        match Verb::of_statement(sql) {
+            Some(Verb::Select) => (
                 Answer::Rows {
                     columns: self.columns.clone(),
                     rows: self.rows.clone(),
                 },
                 Event::Selected(sql.to_string()),
             ),
-            "INSERT" => match parse_insert(sql) {
+            Some(Verb::Insert) => match TSQL.parse_insert_literal(sql) {
                 Some((table, column, value)) => {
                     let origin =
                         format!("mssql://{}/{}/{table}/{column}", self.peer, self.database());

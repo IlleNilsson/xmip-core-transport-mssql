@@ -10,9 +10,8 @@
 
 use codec::cursor::Cursor;
 use codec::unicode::Form;
+use sql::TSQL;
 use transport::error::{Result, protocol_error};
-
-use crate::binary::{from_hex_literal, hex_literal};
 
 /// A nullable integer of one, two, four or eight bytes.
 const INTN: u8 = 0x26;
@@ -162,8 +161,10 @@ pub fn write_value(out: &mut Vec<u8>, kind: ColumnType, value: Option<&str>) {
         ColumnType::VarBinary(max) => {
             // A cell in the `0x` form is its bytes; other text converts to
             // its UTF-8 bytes, as `CONVERT(varbinary, …)` converts it.
-            let bytes = value
-                .map(|text| from_hex_literal(text).unwrap_or_else(|| text.as_bytes().to_vec()));
+            let bytes = value.map(|text| {
+                TSQL.bytes_of(text)
+                    .unwrap_or_else(|| text.as_bytes().to_vec())
+            });
             write_bytes(out, max, bytes.as_deref());
         }
     }
@@ -210,7 +211,7 @@ pub fn read_value(cursor: &mut Cursor<'_>, kind: ColumnType) -> Result<Option<St
         ColumnType::VarChar(max) => read_bytes(cursor, max)?
             .map(|b| Form::Utf8.decode(&b))
             .transpose()?,
-        ColumnType::VarBinary(max) => read_bytes(cursor, max)?.map(|b| hex_literal(&b)),
+        ColumnType::VarBinary(max) => read_bytes(cursor, max)?.map(|b| TSQL.quote_bytes(&b)),
     })
 }
 

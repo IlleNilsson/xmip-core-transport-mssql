@@ -6,7 +6,7 @@ TDS 7.4 with SQL Server authentication. A technology of
 
 ## Acknowledgement
 
-The Location's query only reads; what consumes a row is the `accept` statement, run after the row's receive cycle. `accept` (text, receive side, optional) is a statement — `DELETE FROM inbox WHERE id = @P1`, an `UPDATE` of a status column — with the row's name, the query's first column as the origin carries it, in place of `@P1` (the first parameter of a parameterised T-SQL statement as drivers write it for `sp_executesql`; this client sends the statement as an SQL batch), written as a string literal by `quote_literal` (`N'…'`) (`transport::sql::accept`), so whatever the column holds stays one value. It runs on the connection kept for the server and database, as one SQL batch, which commits itself (autocommit):
+The Location's query only reads; what consumes a row is the `accept` statement, run after the row's receive cycle. `accept` (text, receive side, optional) is a statement — `DELETE FROM inbox WHERE id = @P1`, an `UPDATE` of a status column — with the row's name, the query's first column as the origin carries it, in place of `@P1` (the first parameter of a parameterised T-SQL statement as drivers write it for `sp_executesql`; this client sends the statement as an SQL batch), written as T-SQL's string literal, `N'…'` (`transport::sql::accept`), so whatever the column holds stays one value. It runs on the connection kept for the server and database, as one SQL batch, which commits itself (autocommit):
 
 - **Accepted**: `accept` runs; the row is consumed once its Stream is Xmip's.
 - **Refused**: nothing runs. A refusal is not a consumption: the row is the only copy, so it is left where it lies, and this Location does not receive it again while its body is unchanged; a row whose body changed is a new arrival. The memory is the node process's (`transport::refused`).
@@ -14,15 +14,16 @@ The Location's query only reads; what consumes a row is the `accept` statement, 
 
 A row whose first column is NULL has no name to bind, and nothing runs for it. Where `accept` is left out a row's verdict tells the database nothing: every row is read again unless the query keeps it from that, and a query that consumes as it reads — a `DELETE … OUTPUT deleted.*`, an `UPDATE` of a status column — consumes before the receive cycle has run: acceptance is then at-most-once. Each row is a whole value of the result, read whole.
 
-The bracketed identifiers and `N'…'` literals it writes and its far end reads are
-`xmip-core-library-codec`'s `sql` module, the one SQL quoting in the estate;
-which delimiter is this dialect's own.
+The SQL it writes and its far end reads — bracketed identifiers, `N'…'`
+literals, the `0x…` binary literal, the one INSERT with its table and column
+always quoted identifiers so a target can name nothing but them, and a
+statement's verb — is T-SQL as `xmip-core-library-sql` writes it
+(`sql::TSQL`), the one SQL in the estate.
 
-Where a send target puts its row — `<scheme>://host:port/<catalog>/<table>/<column>`,
-`host:port/<catalog>/<table>/<column>` or `<table>/<column>` — and the one
-INSERT, its table and column always quoted identifiers so a target can name
-nothing but them, are `xmip-core-transport`'s `sql` module; this crate hands
-it its `DIALECT`: the schemes `mssql` and `sqlserver`, a database, brackets.
+Where a send target puts its row — `<scheme>://host:port/<database>/<table>/<column>`,
+`host:port/<database>/<table>/<column>` or `<table>/<column>` — is
+`xmip-core-transport`'s `sql` module; this crate hands it its schemes,
+`mssql` and `sqlserver`.
 
 The payload column holds bytes unless the Location declares otherwise (ADR-0038:
 a payload is bytes). `column = "binary"`, the default, writes every Stream in

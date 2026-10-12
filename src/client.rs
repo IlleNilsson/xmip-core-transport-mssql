@@ -6,7 +6,6 @@ use std::io::BufReader;
 use std::net::{Shutdown, TcpStream};
 use std::time::Duration;
 
-use codec::sql::Delimiter;
 use transport::error::{Result, TransportError, protocol_error};
 use transport::pool::{Pooled, alive};
 use transport::{Login, socket};
@@ -195,14 +194,6 @@ pub fn sql_error(message: &Message) -> TransportError {
     }
 }
 
-/// `text` as a Unicode string literal: `N`, quoted, every quote doubled.
-/// `N` because a plain literal is the server's single-byte collation and
-/// a Stream is UTF-8.
-#[must_use]
-pub fn quote_literal(text: &str) -> String {
-    format!("N{}", Delimiter::STRING.quote(text))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,16 +202,6 @@ mod tests {
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
-    }
-
-    #[test]
-    fn quoting_doubles_the_delimiter_and_nothing_else() {
-        assert_eq!(quote_literal("it's"), "N'it''s'");
-        assert_eq!(quote_literal("back\\slash"), "N'back\\slash'");
-        assert_eq!(quote_literal(""), "N''");
-        let quote_identifier = |name| crate::insert::DIALECT.quote_identifier(name);
-        assert_eq!(quote_identifier("in]box"), "[in]]box]");
-        assert_eq!(quote_identifier("In box"), "[In box]");
     }
 
     #[test]
