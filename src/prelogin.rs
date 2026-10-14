@@ -152,7 +152,7 @@ mod tests {
         let plain = encode_prelogin(&Prelogin::default());
         let read = read_prelogin(&plain).expect("read");
         assert_eq!(read.encryption, ENCRYPT_NOT_SUP);
-        assert!(read.instance.is_empty());
+        assert_eq!(read.instance, "");
         assert!(!read.mars);
     }
 
