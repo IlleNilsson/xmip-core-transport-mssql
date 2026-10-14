@@ -188,7 +188,7 @@ mod tests {
         let plain = encode_login7(&Login7::new(Login::new("xmip", ""), "orders"));
         let read = read_login7(&plain).expect("read");
         assert_eq!(read.login.user, "xmip");
-        assert!(read.login.password.is_empty());
+        assert_eq!(read.login.password, "");
         assert_eq!(read.hostname, "xmip");
         assert_eq!(read.packet_size, 4096);
     }

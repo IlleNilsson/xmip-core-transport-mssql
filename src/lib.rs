@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn mssql_declares_its_settings_and_reads_through_them() {
         use xcore::settings::Given;
-        assert!(MssqlTransport::SETTINGS.problems().is_empty());
+        assert_eq!(MssqlTransport::SETTINGS.problems(), [] as [String; 0]);
         let given = [
             ("database".to_string(), Given::Text("orders".to_string())),
             ("user".to_string(), Given::Text("integration".to_string())),
