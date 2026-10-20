@@ -23,7 +23,7 @@
 //! requires encryption is told so, because TLS is the transport
 //! capability's, per ADR-0033.
 //!
-//! Rows are artefacts and this transport claims none of them, per ADR-0024:
+//! Rows are artifacts and this transport claims none of them, per ADR-0024:
 //! the atomic claim a database has, `WITH (UPDLOCK, READPAST)`, only holds
 //! inside a transaction, and the flow here opens and closes its connection
 //! inside one receive, so there is no transaction to hold it across the
@@ -333,7 +333,7 @@ impl Transport for MssqlTransport {
         )
     }
 
-    /// Rows are artefacts, and one batch holds no transaction to claim
+    /// Rows are artifacts, and one batch holds no transaction to claim
     /// one in.
     fn claims(&self) -> Option<&dyn ResourceClaim> {
         Some(&NoNativeClaim)
@@ -608,7 +608,7 @@ mod tests {
         let refused = refused.expect_err("wrong password");
         assert!(!refused.retryable);
         assert!(refused.message.contains("18456"), "{refused}");
-        assert!(far_end.claims().is_some(), "rows are artefacts");
+        assert!(far_end.claims().is_some(), "rows are artifacts");
         assert_eq!(far_end.name(), "mssql");
         assert_eq!(far_end.directions(), Directions::BOTH);
     }
