@@ -245,6 +245,9 @@ impl Configured for MssqlTransport {
         ],
     };
 
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = SCHEMES;
+
     /// The password is not a setting: it comes through the Location's
     /// `credentials`, never its table.
     fn configured(address: &str, settings: &Read) -> Result<Self> {
