@@ -91,6 +91,9 @@ const LOOPBACK_TARGET: &str = "probe/payload";
 
 #[derive(Clone)]
 pub struct MssqlTransport {
+    /// The secret its Location names, whose password the login presents,
+    /// read at each login (ADR-0019, amendment 2026-10-29).
+    secret: Option<transport::Secured>,
     server: String,
     database: String,
     user: String,
@@ -117,6 +120,7 @@ impl MssqlTransport {
         user: impl Into<String>,
     ) -> Self {
         Self {
+            secret: None,
             server: server.into(),
             database: database.into(),
             user: user.into(),
@@ -183,7 +187,8 @@ impl MssqlTransport {
     }
 
     fn connect_to(&self, server: &str, database: &str) -> Result<Client> {
-        Client::connect(server, database, &self.login(), self.timeout)
+        let login = transport::secured::logged_in(&self.login(), self.secret.as_ref(), "mssql")?;
+        Client::connect(server, database, &login, self.timeout)
     }
 
     /// Bind as the far end clients connect to, and report the address.
@@ -207,6 +212,12 @@ impl MssqlTransport {
 }
 
 impl Configured for MssqlTransport {
+    /// The password the Location's secret holds, read at each login.
+    fn secured_by(mut self, secret: transport::Secured) -> Result<Self> {
+        self.secret = Some(secret);
+        Ok(self)
+    }
+
     /// The address is the server, `host:1433`, both sides log in to.
     const SETTINGS: &'static Settings = &Settings {
         technology: env!("CARGO_PKG_NAME"),
@@ -222,7 +233,7 @@ impl Configured for MssqlTransport {
                 name: "user",
                 kind: Kind::Text,
                 presence: Presence::Required,
-                meaning: "The SQL Server login, its password the credentials'.",
+                meaning: "The SQL Server login, its password the secret the Location names.",
                 applies: Applies::Both,
             },
             Setting {
@@ -248,8 +259,8 @@ impl Configured for MssqlTransport {
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = SCHEMES;
 
-    /// The password is not a setting: it comes through the Location's
-    /// `credentials`, never its table.
+    /// The password is not a setting: it is the secret the Location names,
+    /// never its table.
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let mut transport = Self::new(address, settings.text("database"), settings.text("user"));
         if let Some(query) = settings.optional_text("query") {
@@ -413,7 +424,7 @@ mod tests {
         );
         assert_eq!(built.query, DEFAULT_QUERY);
         assert_eq!(built.timeout, Some(Duration::from_secs(30)));
-        assert!(built.password.is_none(), "the password is the credentials'");
+        assert!(built.password.is_none(), "the password is the secret's");
         assert_eq!(built.column, Column::Binary, "bytes unless declared");
         let mut texts = given.to_vec();
         texts.push(("column".to_string(), Given::Text("text".to_string())));
@@ -750,5 +761,28 @@ mod tests {
             let arrived = pair.round(&payload).expect(name);
             assert_eq!(arrived.bytes, payload, "{name}");
         }
+    }
+
+    #[test]
+    fn the_login_presents_the_password_the_locations_secret_holds() {
+        use transport::secured::Kept;
+        let password = Kept::drawn();
+        let kept = std::sync::Arc::new(Kept::default());
+        kept.set("partner-x.sql", xcore::SecretKind::Password, &password);
+        let far_end = MssqlTransport::new("127.0.0.1:0", "orders", "xmip")
+            .with_password(password)
+            .timing_out_after(secs(2));
+        let (listener, address) = far_end.bind().expect("binding");
+        let secured = kept.secured("partner-x.sql");
+        let sender = std::thread::spawn(move || {
+            MssqlTransport::new(address, "orders", "xmip")
+                .timing_out_after(secs(2))
+                .secured_by(secured)?
+                .send("inbox/payload", b"keyed")
+        });
+        let mut session = far_end.accept_one(&listener).expect("the login is checked");
+        let inserted = session.next_insert().expect("insert").expect("one");
+        assert_eq!(inserted.bytes, b"keyed");
+        sender.join().expect("thread").expect("sent");
     }
 }
