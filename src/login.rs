@@ -174,7 +174,7 @@ mod tests {
             login: Login::new("xmip", "sec'ret"),
             database: "orders".into(),
             hostname: "node-1".into(),
-            app_name: "playground".into(),
+            app_name: "essentials".into(),
             server_name: "db.example".into(),
             library: "xmip-core-transport-mssql".into(),
             language: "us_english".into(),
