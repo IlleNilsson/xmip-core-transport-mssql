@@ -1,5 +1,5 @@
 //! The server's side of one connection: what a test puts at the far end,
-//! and what the playground drives.
+//! and what the essentials drives.
 //!
 //! Not a database. One session answers one client's pre-login, checks its
 //! login against the one expected — or takes any, where none is — and
