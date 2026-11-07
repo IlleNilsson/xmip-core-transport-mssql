@@ -400,6 +400,7 @@ impl Loopback for MssqlTransport {
 mod tests {
     use super::*;
     use codec::unicode::Form;
+    use std::assert_matches;
     use transport::error::TransportError;
     use transport::payload::edge_payloads;
 
@@ -685,11 +686,11 @@ mod tests {
         let mut session = accept();
         for _ in 0..RECEIVES {
             let event = session.next_event().expect("query");
-            assert!(matches!(event, Some(Event::Selected(_))), "{event:?}");
+            assert_matches!(event, Some(Event::Selected(_)), "{event:?}");
         }
         drop(session);
         let mut again = accept();
-        assert!(matches!(again.next_event(), Ok(Some(Event::Selected(_)))));
+        assert_matches!(again.next_event(), Ok(Some(Event::Selected(_))));
         assert_eq!(receiver.join().expect("thread").expect("after").len(), 1);
         assert_eq!(near.connections.opened(), 2);
     }
@@ -725,7 +726,7 @@ mod tests {
                 })
             });
         let event = session.next_event().expect("batch").expect("one");
-        assert!(matches!(event, Event::Executed(sql) if sql.starts_with("INSERT INTO [missing]")));
+        assert_matches!(event, Event::Executed(sql) if sql.starts_with("INSERT INTO [missing]"));
         let error = sender.join().expect("thread").expect_err("errored");
         assert!(error.message.contains("208"), "{error}");
         assert!(error.message.contains("Invalid object name"));
