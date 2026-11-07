@@ -117,10 +117,8 @@ pub fn read_prelogin(body: &[u8]) -> Result<Prelogin> {
                 let name = bytes.split(|b| *b == 0).next().unwrap_or_default();
                 prelogin.instance = String::from_utf8_lossy(name).into_owned();
             }
-            THREADID => {
-                if let Ok(four) = <[u8; 4]>::try_from(bytes) {
-                    prelogin.thread_id = u32::from_le_bytes(four);
-                }
+            THREADID if let Ok(four) = <[u8; 4]>::try_from(bytes) => {
+                prelogin.thread_id = u32::from_le_bytes(four);
             }
             MARS => prelogin.mars = bytes.first().is_some_and(|b| *b != 0),
             _ => {}

@@ -80,10 +80,8 @@ impl Client {
                     kind: ENV_PACKET_SIZE,
                     new,
                     ..
-                } => {
-                    if let Ok(size) = new.parse::<u16>() {
-                        client.packet_size = size.clamp(MIN_PACKET_SIZE, MAX_PACKET_SIZE);
-                    }
+                } if let Ok(size) = new.parse::<u16>() => {
+                    client.packet_size = size.clamp(MIN_PACKET_SIZE, MAX_PACKET_SIZE);
                 }
                 Token::Error(message) => return Err(sql_error(&message)),
                 _ => {}
