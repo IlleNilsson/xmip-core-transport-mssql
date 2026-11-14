@@ -4,6 +4,11 @@ SQL Server transport: one row of a query is one Stream, a send is one INSERT;
 TDS 7.4 with SQL Server authentication. A technology of
 [xmip-core-transport](https://github.com/IlleNilsson/xmip-core-transport).
 
+The transport is every SQL technology's, `transport::sql::SqlTransport`, over
+this crate's `Mssql` wire (2026-11-13): its name and schemes, its settings,
+T-SQL, and the Tabular Data Stream, both halves, which stays here — no other
+family speaks it (`accept_one` serves the far end).
+
 ## Acknowledgement
 
 The Location's query only reads; what consumes a row is the `accept` statement, run after the row's receive cycle. `accept` (text, receive side, optional) is a statement — `DELETE FROM inbox WHERE id = @P1`, an `UPDATE` of a status column — with the row's name, the query's first column as the origin carries it, in place of `@P1` (the first parameter of a parameterised T-SQL statement as drivers write it for `sp_executesql`; this client sends the statement as an SQL batch), written as T-SQL's string literal, `N'…'` (`transport::sql::accept`), so whatever the column holds stays one value. It runs on the connection kept for the server and database, as one SQL batch, which commits itself (autocommit):

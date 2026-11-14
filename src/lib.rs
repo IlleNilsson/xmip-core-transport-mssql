@@ -48,6 +48,13 @@
 //! A send target is `mssql://host:1433/<database>/<table>/<column>`,
 //! `host:1433/<database>/<table>/<column>`, or `<table>/<column>` on the
 //! configured server and database.
+//!
+//! **The transport is every SQL technology's**, `transport::sql`'s
+//! `SqlTransport` over this crate's [`Mssql`] wire (2026-11-13): the query
+//! and its rows, the `accept` statement after a row's cycle, the INSERT a
+//! send writes, the connections kept per server and database, the
+//! settings. What is SQL Server's own is this crate's: T-SQL, and the
+//! Tabular Data Stream, both halves.
 
 pub mod batch;
 pub mod client;
@@ -59,341 +66,90 @@ pub mod token;
 pub mod wire;
 
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::time::Duration;
 
 pub use client::{Client, QueryResult};
 pub use session::{Answer, Event, Session};
-use sql::TSQL;
-use transport::ArrivalIdentity;
-use transport::Configured;
-use transport::claim::{NoNativeClaim, ResourceClaim};
+use sql::{Dialect, TSQL};
 use transport::error::{Result, protocol_error};
-use transport::listening::{Accepting, Listening};
-use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
-use transport::socket;
-use transport::sql::{COLUMN, Column, ENCODING, accept, destination};
-use transport::{Arrived, Directions, Login, Pool, Taken, Transport};
-use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
+use transport::sql::accept::ACCEPT;
+use transport::sql::{
+    COLUMN, DATABASE, ENCODING, Probe, QUERY, Rows, SqlTransport, TIMEOUT, USER, Wire,
+};
+use transport::{Login, Pooled, Taken};
+use xcore::settings::Settings;
 
-/// The schemes a send target may open with.
-const SCHEMES: &[&str] = &["mssql", "sqlserver"];
+/// A Location over a SQL Server.
+pub type MssqlTransport = SqlTransport<Mssql>;
 
-/// What a Receive Location runs unless told otherwise.
-pub const DEFAULT_QUERY: &str = "SELECT id, payload FROM inbox ORDER BY id";
+/// SQL Server's wire: this crate's Tabular Data Stream client, logging in
+/// with SQL Server authentication.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Mssql;
 
-/// What the loopback pair agrees on: one database, one user whose login
-/// the far end takes as it comes, one table and column the payload is
-/// inserted into.
-const LOOPBACK_DATABASE: &str = "probe";
-const LOOPBACK_USER: &str = "xmip";
-const LOOPBACK_TARGET: &str = "probe/payload";
+impl Wire for Mssql {
+    type Client = Client;
 
-#[derive(Clone)]
-pub struct MssqlTransport {
-    /// The secret its Location names, whose password the login presents,
-    /// read at each login (ADR-0019, amendment 2026-10-29).
-    secret: Option<transport::Secured>,
-    server: String,
-    database: String,
-    user: String,
-    password: Option<String>,
-    query: String,
-    /// The statement run on a row's verdict, its name bound in.
-    accept: Option<String>,
-    /// The rows refused and left, not received again while unchanged.
-    /// Cloned, the same memory.
-    refused: accept::RefusedRows,
-    column: Column,
-    timeout: Option<Duration>,
-    /// The connections a send inserts on and a receive queries on, logged
-    /// in once per server and database and kept.
-    connections: Pool<Client>,
-}
-
-impl MssqlTransport {
-    /// Speak to the server at `server`, on `database`, as `user`.
-    #[must_use]
-    pub fn new(
-        server: impl Into<String>,
-        database: impl Into<String>,
-        user: impl Into<String>,
-    ) -> Self {
-        Self {
-            secret: None,
-            server: server.into(),
-            database: database.into(),
-            user: user.into(),
-            password: None,
-            query: DEFAULT_QUERY.to_string(),
-            accept: None,
-            refused: accept::RefusedRows::default(),
-            column: Column::Binary,
-            timeout: None,
-            connections: Pool::new(),
-        }
-    }
-
-    /// The password the login carries; empty without one.
-    #[must_use]
-    pub fn with_password(mut self, password: impl Into<String>) -> Self {
-        self.password = Some(password.into());
-        self
-    }
-
-    /// The query a receive runs: the first column is the row's name, the
-    /// last is the Stream.
-    #[must_use]
-    pub fn with_query(mut self, query: impl Into<String>) -> Self {
-        self.query = query.into();
-        self
-    }
-
-    /// The statement run once a row's cycle accepted it, the
-    /// row's name in place of the dialect's first parameter
-    /// (`transport::sql::accept`).
-    #[must_use]
-    pub fn with_accept(mut self, statement: impl Into<String>) -> Self {
-        self.accept = Some(statement.into());
-        self
-    }
-
-    /// What the payload column holds: bytes unless declared otherwise.
-    #[must_use]
-    pub const fn holding(mut self, column: Column) -> Self {
-        self.column = column;
-        self
-    }
-
-    /// Give up on a server that stops mid-message.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
-    /// The login this transport gives.
-    #[must_use]
-    pub fn login(&self) -> Login {
-        Login::new(&*self.user, self.password.clone().unwrap_or_default())
-    }
-
-    /// Log in to the server.
-    ///
-    /// # Errors
-    /// Where the server could not be reached or refused the login.
-    pub fn connect(&self) -> Result<Client> {
-        self.connect_to(&self.server, &self.database)
-    }
-
-    fn connect_to(&self, server: &str, database: &str) -> Result<Client> {
-        let login = transport::secured::logged_in(&self.login(), self.secret.as_ref(), "mssql")?;
-        Client::connect(server, database, &login, self.timeout)
-    }
-
-    /// Bind as the far end clients connect to, and report the address.
-    ///
-    /// # Errors
-    /// Where the address is taken, malformed, or not permitted.
-    pub fn bind(&self) -> Result<(TcpListener, String)> {
-        socket::bind_tcp(&self.server)
-    }
-
-    /// Accept one client on an already-bound listener, demanding this
-    /// transport's user and password where it has a password.
-    ///
-    /// # Errors
-    /// Where the connection could not be accepted or the login failed.
-    pub fn accept_one(&self, listener: &TcpListener) -> Result<Session> {
-        let expected = self.password.as_ref().map(|_| self.login());
-        Session::accept(listener, expected.as_ref(), self.timeout)
-            .map(|session| session.holding(self.column))
-    }
-}
-
-impl Configured for MssqlTransport {
-    /// The password the Location's secret holds, read at each login.
-    fn secured_by(mut self, secret: transport::Secured) -> Result<Self> {
-        self.secret = Some(secret);
-        Ok(self)
-    }
-
+    const NAME: &'static str = "mssql";
+    const SCHEMES: &'static [&'static str] = &["mssql", "sqlserver"];
     /// The address is the server, `host:1433`, both sides log in to.
     const SETTINGS: &'static Settings = &Settings {
         technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "database",
-                kind: Kind::Text,
-                presence: Presence::Required,
-                meaning: "The database logged in to, and a send target's when it names none.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "user",
-                kind: Kind::Text,
-                presence: Presence::Required,
-                meaning: "The SQL Server login, its password the secret the Location names.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "query",
-                kind: Kind::Text,
-                presence: Presence::Default(Fixed::Text(DEFAULT_QUERY)),
-                meaning: "The query a receive runs: first column a row's name, last its Stream.",
-                applies: Applies::Receive,
-            },
-            accept::ACCEPT,
-            COLUMN,
-            ENCODING,
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long a server that stops mid-message is waited on.",
-                applies: Applies::Both,
-            },
-        ],
+        settings: &[DATABASE, USER, QUERY, ACCEPT, COLUMN, ENCODING, TIMEOUT],
+    };
+    /// One user whose login the far end takes as it comes.
+    const PROBE: Probe = Probe {
+        database: "probe",
+        user: "xmip",
+        password: "",
+        target: "probe/payload",
     };
 
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = SCHEMES;
-
-    /// The password is not a setting: it is the secret the Location names,
-    /// never its table.
-    fn configured(address: &str, settings: &Read) -> Result<Self> {
-        let mut transport = Self::new(address, settings.text("database"), settings.text("user"));
-        if let Some(query) = settings.optional_text("query") {
-            transport = transport.with_query(query);
-        }
-        if let Some(statement) = settings.optional_text(accept::ACCEPT.name) {
-            transport = transport.with_accept(statement);
-        }
-        let transport = transport.holding(Column::configured(settings)?);
-        Ok(match settings.optional_duration("timeout") {
-            Some(timeout) => transport.timing_out_after(timeout),
-            None => transport,
-        })
-    }
-}
-
-impl Transport for MssqlTransport {
-    fn name(&self) -> &'static str {
-        "mssql"
+    fn dialect() -> &'static Dialect {
+        &TSQL
     }
 
-    fn directions(&self) -> Directions {
-        Directions::BOTH
+    fn connect(
+        &self,
+        server: &str,
+        database: &str,
+        login: &Login,
+        timeout: Option<Duration>,
+    ) -> Result<Client> {
+        Client::connect(server, database, login, timeout)
     }
 
-    fn arrivals(&self) -> transport::Arrivals {
-        transport::Arrivals::Ordered("a poll reads again what is not yet told")
+    fn usable(client: &mut Client) -> bool {
+        client.usable()
     }
 
-    fn waiting(&self) -> transport::Waiting {
-        transport::Waiting::Polled("a receive runs the query and returns")
+    fn query(client: &mut Client, sql: &str) -> Result<Rows<String>> {
+        Ok(client.query(sql)?.rows)
     }
 
-    /// Run the query on the connection kept for the server and database, logged in
-    /// on the first receive; each row is a Stream, whole. Its verdict runs the
-    /// `accept` statement where one is declared — on `Accepted`, never on `Refused`
-    /// or `Failed` — and tells the database nothing where none is: whether a row is
-    /// read again is then the query's (a query that consumes as it reads makes
-    /// acceptance at-most-once).
-    fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
-        let result = self.connections.exchange(
-            &format!("{}/{}", self.server, self.database),
-            || self.connect(),
-            |client| client.query(&self.query),
-        )?;
-        let shared = Arc::new(self.clone());
-        accept::arrivals(
-            result.rows,
-            most,
-            &self.refused,
-            |name| format!("mssql://{}/{}?row={name}", self.server, self.database),
-            Clone::clone,
-            |value| self.column.bytes(&value, &TSQL),
-            |name| {
-                let transport = Arc::clone(&shared);
-                accept::accepting(&TSQL, self.accept.as_deref(), name, move |sql| {
-                    transport.connections.exchange(
-                        &format!("{}/{}", transport.server, transport.database),
-                        || transport.connect(),
-                        |client| client.execute(sql).map(|_| ()),
-                    )
-                })
-            },
-        )
+    fn execute(client: &mut Client, sql: &str) -> Result<()> {
+        client.execute(sql).map(|_| ())
     }
 
-    fn sending(&self) -> transport::Sending {
-        transport::Sending::Gathered("an INSERT carries the body as one literal in its statement")
-    }
-
-    /// Insert the bytes as one column of one row: as a binary literal, or
-    /// as text where the column is declared to hold it — on the connection
-    /// kept for the server and database, logged in on the first send to
-    /// them.
-    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
-        let bytes: &[u8] = &outgoing.gather()?;
-        let to = destination(SCHEMES, target, &self.server, &self.database)?;
-        let literal = self.column.literal(bytes, &TSQL)?;
-        let insert = TSQL.insert(to.table, to.column, &literal);
-        self.connections.exchange(
-            &format!("{}/{}", to.server, to.database),
-            || self.connect_to(to.server, to.database),
-            |client| client.execute(&insert).map(|_| ()),
-        )
-    }
-
-    /// Rows are artifacts, and one batch holds no transaction to claim
-    /// one in.
-    fn claims(&self) -> Option<&dyn ResourceClaim> {
-        Some(&NoNativeClaim)
-    }
-}
-
-impl MssqlTransport {
-    /// Both ends on this machine: an ephemeral local port, a login the far
-    /// end takes as it comes, the loopback timeout.
-    #[must_use]
-    pub fn loopback() -> Self {
-        Self::new("127.0.0.1:0", LOOPBACK_DATABASE, LOOPBACK_USER)
-            .timing_out_after(LOOPBACK_TIMEOUT)
-    }
-}
-
-impl Accepting for MssqlTransport {
-    fn take_one(self, listener: &TcpListener) -> Result<Taken> {
-        // The client keeps its connection for the next insert.
-        self.accept_one(listener)?
+    /// The client keeps its connection for the next insert.
+    fn take_one(transport: &MssqlTransport, listener: &TcpListener) -> Result<Taken> {
+        accept_one(transport, listener)?
             .next_insert()?
             .ok_or_else(|| protocol_error("the client closed without inserting"))
     }
 }
 
-impl Loopback for MssqlTransport {
-    fn arrival_identity(&self) -> ArrivalIdentity {
-        ArrivalIdentity::Unnamed(
-            "a row names no sender: the database it was read from is in its origin",
-        )
-    }
-
-    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
-    }
-
-    /// INSERT the payload as one column of one row, as the column is
-    /// declared to hold it, from a fresh near end logging in to `address`
-    /// as this transport does.
-    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
-        let near = Self {
-            server: address.to_string(),
-            ..self.clone()
-        };
-        near.send(LOOPBACK_TARGET, payload)
-    }
+/// Accept one client on a listener `transport` bound, demanding its user
+/// and password where it has a password, the login taken as it comes where
+/// it has none.
+///
+/// # Errors
+/// Where the connection could not be accepted or the login failed.
+pub fn accept_one(transport: &MssqlTransport, listener: &TcpListener) -> Result<Session> {
+    let login = transport.login();
+    let expected = (!login.password.is_empty()).then_some(login);
+    Session::accept(listener, expected, transport.timeout())
+        .map(|session| session.holding(transport.column()))
 }
 
 #[cfg(test)]
@@ -403,6 +159,9 @@ mod tests {
     use std::assert_matches;
     use transport::error::TransportError;
     use transport::payload::edge_payloads;
+    use transport::sql::{Column, DEFAULT_QUERY};
+    use transport::{Arrived, Configured, Directions, Loopback, Transport};
+    use xcore::settings::Applies;
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
@@ -418,20 +177,23 @@ mod tests {
             ("timeout".to_string(), Given::Text("30s".to_string())),
         ];
         let built = MssqlTransport::open("sql:1433", Applies::Receive, &given).expect("built");
-        assert_eq!(built.server, "sql:1433");
+        assert_eq!(built.server(), "sql:1433");
         assert_eq!(
-            (built.database.as_str(), built.user.as_str()),
+            (built.database(), built.login().user.as_str()),
             ("orders", "integration")
         );
-        assert_eq!(built.query, DEFAULT_QUERY);
-        assert_eq!(built.timeout, Some(Duration::from_secs(30)));
-        assert!(built.password.is_none(), "the password is the secret's");
-        assert_eq!(built.column, Column::Binary, "bytes unless declared");
+        assert_eq!(built.query(), DEFAULT_QUERY);
+        assert_eq!(built.timeout(), Some(Duration::from_secs(30)));
+        assert!(
+            built.login().password.is_empty(),
+            "the password is the secret's"
+        );
+        assert_eq!(built.column(), Column::Binary, "bytes unless declared");
         let mut texts = given.to_vec();
         texts.push(("column".to_string(), Given::Text("text".to_string())));
         texts.push(("encoding".to_string(), Given::Text("utf-32be".to_string())));
         let built = MssqlTransport::open("sql:1433", Applies::Send, &texts).expect("text");
-        assert_eq!(built.column, Column::Text(Form::Utf32Be));
+        assert_eq!(built.column(), Column::Text(Form::Utf32Be));
         let Err(refused) = MssqlTransport::open("sql:1433", Applies::Send, &given[1..]) else {
             panic!("database is required");
         };
@@ -491,8 +253,7 @@ mod tests {
             &[Some("43"), Some("0x63")],
             &[None, Some("0x64")],
         ];
-        let mut session = far_end
-            .accept_one(&listener)
+        let mut session = accept_one(&far_end, &listener)
             .expect("accepting")
             .with_table(&["id", "payload"], &rows);
         let mut events = Vec::new();
@@ -536,8 +297,7 @@ mod tests {
             &[Some("41"), Some("order"), Some("0x4953412a30302a")],
             &[None, Some("raw"), Some("0xfffe")],
         ];
-        let mut session = far_end
-            .accept_one(&listener)
+        let mut session = accept_one(&far_end, &listener)
             .expect("accepting")
             .with_table(&["id", "kind", "payload"], &rows);
         assert_eq!(session.user(), "xmip");
@@ -552,8 +312,7 @@ mod tests {
             session.next_event().expect("ended").is_none(),
             "a verdict, refused or accepted, says nothing to the database"
         );
-        let mut session = far_end
-            .accept_one(&listener)
+        let mut session = accept_one(&far_end, &listener)
             .expect("the text column")
             .with_table(&["id", "payload"], &[&[Some("43"), Some("0x41")]]);
         while session.next_event().expect("event").is_some() {}
@@ -600,7 +359,7 @@ mod tests {
             Ok::<_, TransportError>((bad_target, refused))
         });
         // One server and database, so one login for all three inserts.
-        let mut session = far_end.accept_one(&listener).expect("accepting");
+        let mut session = accept_one(&far_end, &listener).expect("accepting");
         let first = session.next_insert().expect("first").expect("one");
         assert_eq!(first.bytes, b"it's here");
         assert!(first.origin_uri.ends_with("/orders/inbox/payload"));
@@ -616,7 +375,9 @@ mod tests {
             [0xff, 0xfe],
             "a binary column, so the binary literal"
         );
-        let error = far_end.accept_one(&listener).err().expect("wrong password");
+        let error = accept_one(&far_end, &listener)
+            .err()
+            .expect("wrong password");
         assert!(error.message.contains("Login failed"));
         let (bad_target, refused) = sender.join().expect("thread").expect("sending");
         assert!(!bad_target.expect_err("not a column").retryable);
@@ -646,17 +407,17 @@ mod tests {
             sending.send("inbox/payload", b"after the close")
         });
         // One pre-login and LOGIN7 for every insert: one session accepted.
-        let mut session = far_end.accept_one(&listener).expect("accepting");
+        let mut session = accept_one(&far_end, &listener).expect("accepting");
         for n in 0..SENDS {
             let inserted = session.next_insert().expect("insert").expect("one");
             assert_eq!(inserted.bytes, n.to_string().as_bytes());
         }
         drop(session);
-        let mut again = far_end.accept_one(&listener).expect("a new login");
+        let mut again = accept_one(&far_end, &listener).expect("a new login");
         let last = again.next_insert().expect("insert").expect("one");
         assert_eq!(last.bytes, b"after the close");
         sender.join().expect("thread").expect("sending");
-        assert_eq!(near.connections.opened(), 2);
+        assert_eq!(near.opened(), 2);
     }
 
     #[test]
@@ -677,8 +438,7 @@ mod tests {
             receiving.receive()
         });
         let accept = || {
-            far_end
-                .accept_one(&listener)
+            accept_one(&far_end, &listener)
                 .expect("a login")
                 .with_table(&["id", "payload"], &[&[Some("1"), None]])
         };
@@ -692,7 +452,7 @@ mod tests {
         let mut again = accept();
         assert_matches!(again.next_event(), Ok(Some(Event::Selected(_))));
         assert_eq!(receiver.join().expect("thread").expect("after").len(), 1);
-        assert_eq!(near.connections.opened(), 2);
+        assert_eq!(near.opened(), 2);
     }
 
     #[test]
@@ -716,8 +476,7 @@ mod tests {
                 .timing_out_after(secs(2))
                 .send("missing/payload", b"x")
         });
-        let mut session = far_end
-            .accept_one(&listener)
+        let mut session = accept_one(&far_end, &listener)
             .expect("accepting")
             .answering(|sql| {
                 sql.contains("[missing]").then(|| Answer::Error {
@@ -773,7 +532,7 @@ mod tests {
                 .secured_by(secured)?
                 .send("inbox/payload", b"keyed")
         });
-        let mut session = far_end.accept_one(&listener).expect("the login is checked");
+        let mut session = accept_one(&far_end, &listener).expect("the login is checked");
         let inserted = session.next_insert().expect("insert").expect("one");
         assert_eq!(inserted.bytes, b"keyed");
         sender.join().expect("thread").expect("sent");
