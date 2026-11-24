@@ -174,7 +174,7 @@ mod tests {
             login: Login::new("xmip", "sec'ret"),
             database: "orders".into(),
             hostname: "node-1".into(),
-            app_name: "essentials".into(),
+            app_name: "system-test".into(),
             server_name: "db.example".into(),
             library: "xmip-core-transport-mssql".into(),
             language: "us_english".into(),
@@ -183,7 +183,7 @@ mod tests {
         let bytes = encode_login7(&login);
         assert_eq!(&bytes[4..8], &[0x04, 0x00, 0x00, 0x74], "TDS 7.4");
         assert_eq!(&bytes[36..38], &[94, 0], "the first field at 94");
-        assert_eq!(bytes.len(), 94 + 2 * (6 + 4 + 7 + 10 + 10 + 25 + 10 + 6));
+        assert_eq!(bytes.len(), 94 + 2 * (6 + 4 + 7 + 11 + 10 + 25 + 10 + 6));
         assert_eq!(read_login7(&bytes).expect("read"), login);
         let plain = encode_login7(&Login7::new(Login::new("xmip", ""), "orders"));
         let read = read_login7(&plain).expect("read");
