@@ -55,48 +55,68 @@
 //! send writes, the connections kept per server and database, the
 //! settings. What is SQL Server's own is this crate's: T-SQL, and the
 //! Tabular Data Stream, both halves.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 pub mod batch;
+#[cfg(feature = "default")]
 pub mod client;
+#[cfg(feature = "default")]
 pub mod column;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 pub mod login;
+#[cfg(feature = "default")]
 pub mod prelogin;
+#[cfg(feature = "default")]
 pub mod session;
+#[cfg(feature = "default")]
 pub mod token;
+#[cfg(feature = "default")]
 pub mod wire;
 
+#[cfg(feature = "default")]
 use std::net::TcpListener;
+#[cfg(feature = "default")]
 use std::time::Duration;
 
+#[cfg(feature = "default")]
 pub use client::{Client, QueryResult};
+#[cfg(feature = "default")]
 pub use session::{Answer, Event, Session};
+#[cfg(feature = "default")]
 use sql::{Dialect, TSQL};
+#[cfg(feature = "default")]
 use transport::error::{Result, protocol_error};
-use transport::sql::accept::ACCEPT;
-use transport::sql::{
-    COLUMN, DATABASE, ENCODING, Probe, QUERY, Rows, SqlTransport, TIMEOUT, USER, Wire,
-};
+#[cfg(feature = "default")]
+use transport::sql::{Probe, Rows, SqlTransport, Wire};
+#[cfg(feature = "default")]
 use transport::{Login, Pooled, Taken};
+#[cfg(feature = "default")]
 use xcore::settings::Settings;
 
 /// A Location over a SQL Server.
+#[cfg(feature = "default")]
 pub type MssqlTransport = SqlTransport<Mssql>;
 
 /// SQL Server's wire: this crate's Tabular Data Stream client, logging in
 /// with SQL Server authentication.
+#[cfg(feature = "default")]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Mssql;
 
+#[cfg(feature = "default")]
 impl Wire for Mssql {
     type Client = Client;
 
     const NAME: &'static str = "mssql";
-    const SCHEMES: &'static [&'static str] = &["mssql", "sqlserver"];
-    /// The address is the server, `host:1433`, both sides log in to.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[DATABASE, USER, QUERY, ACCEPT, COLUMN, ENCODING, TIMEOUT],
-    };
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
     /// One user whose login the far end takes as it comes.
     const PROBE: Probe = Probe {
         database: "probe",
@@ -145,6 +165,7 @@ impl Wire for Mssql {
 ///
 /// # Errors
 /// Where the connection could not be accepted or the login failed.
+#[cfg(feature = "default")]
 pub fn accept_one(transport: &MssqlTransport, listener: &TcpListener) -> Result<Session> {
     let login = transport.login();
     let expected = (!login.password.is_empty()).then_some(login);
